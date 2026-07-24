@@ -1,0 +1,9 @@
+# RT-DETR custom buoy model: class index -> name (from isaac_ros_assets/models/rtdetr/test_trt.py NAMES).
+# Detections carry class_id as the integer index (string); this maps it to a human name.
+0: buoy
+1: east_buoy
+2: green_buoy
+3: north_buoy
+4: red_buoy
+5: south_buoy
+6: west_buoy
