@@ -17,6 +17,7 @@ export FASTRTPS_DEFAULT_PROFILES_FILE=/workspaces/isaac_ros-dev/src/rtdetr_zed_t
 pkill -9 -f "lib/rtdetr_zed_tracker/tracker_node" 2>/dev/null || true
 pkill -9 -f "lib/rtdetr_zed_tracker/depth_fusion_node" 2>/dev/null || true
 pkill -9 -f "lib/rtdetr_zed_tracker/overlay_node" 2>/dev/null || true
+pkill -9 -f "lib/rtdetr_zed_tracker/yolo_world_node" 2>/dev/null || true
 sleep 1
 
 exec ros2 launch rtdetr_zed_tracker tracking.launch.py "$@"

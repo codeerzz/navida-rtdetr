@@ -1,0 +1,50 @@
+# Parameters for yolo_world_node.
+# Applied via /** so the node name/namespace is free.
+#
+# Change avoid_prompt at runtime (no rebuild, no restart):
+#   ros2 param set /yolo_world_node avoid_prompt "a red motorboat"
+/**:
+  ros__parameters:
+
+    # --- prompt ---
+    # The text class YOLO-World will search for.  Use descriptive but concise
+    # language.  YOLO-World-S is an open-vocabulary detector: it generalises
+    # from COCO/Objects365 training to arbitrary text classes.
+    # Examples: "a vessel", "a ship", "a motorboat", "a human in water"
+    avoid_prompt: "a vessel"
+
+    # --- detection threshold ---
+    # Keep >= 0.25 to suppress random false positives on open water.
+    # Lower values increase recall at the cost of more false alarms.
+    confidence_threshold: 0.3
+
+    # --- cross-suppression ---
+    # If a YOLO-World detection overlaps an RT-DETR confirmed buoy track
+    # by this IoU or more, it is discarded (assumed to be a buoy, not a vessel).
+    # 0.3 is intentionally low: even partial overlap is enough to suppress.
+    suppression_iou_threshold: 0.3
+
+    # --- geometry (must match the ZED + RT-DETR pipeline resolution) ---
+    source_image_width: 1280
+    source_image_height: 720
+
+    # --- model ---
+    # yolov8s-worldv2 = small variant (~11 M params).  Chosen because:
+    #   1. Jetson GPU is already ~85% loaded by RT-DETR + NEURAL_LIGHT depth.
+    #   2. Vessel avoidance requires detection, not fine-grained segmentation.
+    #   3. Small model reaches ~25-30 Hz on Orin, well above avoidance needs.
+    # To use medium: change to "yolov8m-worldv2.pt" (more accurate, ~half speed).
+    model_path: "yolov8s-worldv2.pt"
+
+    # --- depth matching ---
+    depth_buffer: 30            # depth frames kept for stamp matching
+    max_time_diff_sec: 0.05     # nearest-stamp tolerance (half a ~20 Hz depth frame)
+
+    # --- depth sampling (mirrors depth_fusion_node defaults) ---
+    roi_shrink_factor: 0.4      # sample from central 40% of the detected box
+    min_valid_depth: 0.3        # metres — anything closer is noise
+    max_valid_depth: 20.0       # metres — beyond this buoy detection is unreliable anyway
+    min_valid_ratio: 0.15       # at least 15% of ROI pixels must be valid
+    depth_percentile: 50.0      # use median depth (robust against outliers)
+    depth_ema_alpha: 0.4        # EMA smoothing factor for tracked obstacle positions
+    max_depth_jump: 1.0         # metres — transient depth jump rejection threshold
