@@ -72,3 +72,7 @@ jobs:
             rtdetr_zed_tracker_msgs
             fusion_pkg
           target-ros2-distro: humble
+          # Without this, "vcs import" (which re-clones this repo to build the
+          # ROS workspace) hits it anonymously over HTTPS -- fails with a bare
+          # "exit code 1" and no further detail if the repo is private.
+          import-token: ${{ secrets.GITHUB_TOKEN }}
