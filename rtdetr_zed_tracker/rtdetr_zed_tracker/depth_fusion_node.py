@@ -54,11 +54,13 @@ class DepthFusionNode(Node):
         self.src_h = p('source_image_height', 720, _desc('color/track box height (px)')).value
         self.sync_mode = p('sync_mode', 'nearest', _desc('exact|nearest (depth is slower than RGB)')).value
         self.max_dt = p('max_time_diff_sec', 0.05, _desc('nearest-match tolerance (s)')).value
-        self.roi_shrink = p('roi_shrink_factor', 0.4, _desc('central ROI fraction of box')).value
         self.min_valid = p('min_valid_depth', 0.3, _desc('min usable range (m)')).value
         self.max_valid = p('max_valid_depth', 20.0, _desc('max usable range (m)')).value
-        self.min_ratio = p('min_valid_ratio', 0.15, _desc('min valid-pixel ratio in ROI')).value
-        self.percentile = p('depth_percentile', 50.0, _desc('percentile of valid ROI depths')).value
+        self.min_ratio = p('min_valid_ratio', 0.15, _desc('min valid-pixel ratio in box')).value
+        self.min_valid_px = p('min_valid_pixels', 15,
+                              _desc('min absolute valid-pixel count in box')).value
+        self.cluster_window_m = p('depth_cluster_window_m', 0.5,
+                                  _desc('max spread (m) of the densest depth cluster')).value
         self.ema_alpha = p('depth_ema_alpha', 0.4, _desc('per-track position EMA alpha')).value
         self.max_jump = p('max_depth_jump', 1.0, _desc('reject Z jump > this unless it persists (m)')).value
         labels_file = p('class_labels_file', '', _desc('YAML index->name; empty=built-in buoys')).value
@@ -87,7 +89,7 @@ class DepthFusionNode(Node):
         self.create_timer(5.0, self._log_stats)
         self.get_logger().info(
             f'depth_fusion_node up: sync={self.sync_mode} src={self.src_w}x{self.src_h} '
-            f'roi_shrink={self.roi_shrink} labels={len(self.name_to_index)}')
+            f'cluster_window={self.cluster_window_m}m labels={len(self.name_to_index)}')
 
     # ---------------------------------------------------------------- inputs
     def _load_name_index(self, path):
@@ -182,8 +184,8 @@ class DepthFusionNode(Node):
             box_src = [cxb - w / 2, cyb - h / 2, cxb + w / 2, cyb + h / 2]
             box_dep = source_box_to_depth_px(box_src, (self.src_w, self.src_h), (dw, dh))
             z, ratio, valid, (uc, vc) = sample_box_depth(
-                depth_m, invalid, box_dep, self.roi_shrink, self.min_valid,
-                self.max_valid, self.min_ratio, self.percentile)
+                depth_m, invalid, box_dep, self.min_valid, self.max_valid,
+                self.min_ratio, self.min_valid_px, self.cluster_window_m)
 
             st = self.tracks.get(tid)
             if valid:
