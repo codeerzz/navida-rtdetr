@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Terminal 4 payload: live RGB overlay (boxes + IDs) in rqt_image_view. Runs INSIDE
+# Live RGB overlay (boxes + class/score) in rqt_image_view. Runs INSIDE
 # the container. Requires run_tracking.sh to have been started WITH enable_overlay:=true
 # (that is what launches overlay_node — without it there is nothing to view).
 source /opt/ros/humble/setup.bash

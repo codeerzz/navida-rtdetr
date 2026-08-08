@@ -1,5 +1,9 @@
-"""Launch the RGB tracker + depth fusion + YOLO-World obstacle detector
-(+ optional overlay) as one graph.
+"""Launch depth fusion (+ optional overlay) as one graph.
+
+Pipeline: RT-DETR -> whole-box depth density clustering -> world-frame tracking.
+The image-space ByteTrack stage is gone; depth_fusion_node consumes RT-DETR
+detections directly and identity is established downstream by buoy_mapper_node
+from world geometry.
 
 The ZED + RT-DETR pipeline must already be running (produces /detections_output,
 /zed_node/depth/...). All nodes here are separate processes joining that pipeline,
@@ -36,7 +40,7 @@ PKG = 'rtdetr_zed_tracker'
 
 def generate_launch_description():
     share = get_package_share_directory(PKG)
-    params = os.path.join(share, 'config', 'tracker_params.yaml')
+    params = os.path.join(share, 'config', 'fusion_params.yaml')
     labels = os.path.join(share, 'config', 'class_labels.yaml')
     yw_params = os.path.join(share, 'config', 'yolo_world_params.yaml')
     default_color_ranges = os.path.join(share, 'config', 'color_ranges.yaml')
@@ -102,9 +106,9 @@ def generate_launch_description():
 
     fusion = Node(
         package=PKG, executable='depth_fusion_node', name='depth_fusion_node', output='screen',
-        parameters=[{'class_labels_file': labels}],
+        parameters=[params, {'class_labels_file': labels}],
         remappings=[
-            ('~/tracks_input', '/tracker_node/tracks_2d'),
+            ('~/detections_input', detections),
             ('~/depth', depth),
             ('~/depth_camera_info', depth_info),
         ],
@@ -113,22 +117,7 @@ def generate_launch_description():
     overlay = Node(
         package=PKG, executable='overlay_node', name='overlay_node', output='screen',
         condition=IfCondition(enable_overlay),
-        remappings=[('~/image', color), ('~/tracks_2d', '/tracker_node/tracks_2d')],
-    )
-
-    # YOLO-World: open-vocabulary obstacle detector.
-    # Subscribes to the ZED color image and the RT-DETR buoy tracks (for cross-suppression).
-    # Publishes filtered obstacle detections on /yolo_world_node/detections.
-    yolo_world = Node(
-        package=PKG, executable='yolo_world_node', name='yolo_world_node', output='screen',
-        condition=IfCondition(enable_yolo_world),
-        parameters=[yw_params, {'avoid_prompt': avoid_prompt}],
-        remappings=[
-            ('~/image', color),
-            ('~/buoy_tracks', '/tracker_node/tracks_2d'),
-            ('~/depth', depth),
-            ('~/depth_camera_info', depth_info),
-        ],
+        remappings=[('~/image', color), ('~/tracks_2d', detections)],
     )
 
     # Independent enrichment stage: re-checks red/green buoy tracks against a

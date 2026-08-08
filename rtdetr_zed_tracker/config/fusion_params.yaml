@@ -1,0 +1,48 @@
+# Parameters for depth_fusion_node. Applied via /** so node name/namespace is free.
+#
+# Pipeline: RT-DETR -> whole-box depth density clustering (here) -> world tracking
+# (buoy_mapper_node, host side). There is no image-space tracker any more, so the
+# ByteTrack block that used to live in this file is gone with it.
+/**:
+  ros__parameters:
+    # --- geometry ---
+    # The Isaac RT-DETR decoder emits ORIGINAL pixels (verified Phase 0/2), so
+    # boxes arrive ready to use and are only clipped to these bounds.
+    source_image_width: 1280
+    source_image_height: 720
+
+    # --- detection gating ---
+    # 0.0 = keep everything RT-DETR publishes; the engine is already launched with
+    # confidence_threshold:=0.8 (see scripts/pipeline.sh), so this is a second,
+    # optional filter rather than the primary one.
+    min_detection_score: 0.0
+
+    # --- depth / RGB time sync ---
+    sync_mode: "nearest"        # exact | nearest (depth is slower than RGB)
+    max_time_diff_sec: 0.05
+    depth_buffer: 30
+
+    # --- whole-box depth density clustering ---
+    # No center-ROI crop. Every valid pixel in the box is kept, then the range is
+    # taken from the DENSEST cluster: the widest run of depth-sorted samples that
+    # all fall within depth_cluster_window_m of each other. A tight group of real
+    # object pixels beats a larger but spread-out group of background/water, so a
+    # box that loosely includes background still reads the object.
+    min_valid_depth: 0.3
+    max_valid_depth: 20.0
+    min_valid_ratio: 0.15       # fraction of the box carrying usable depth
+    min_valid_pixels: 15        # absolute count; ratio alone is a weak signal on
+                                # tiny boxes (2/9 valid clears 15% but means nothing)
+    depth_cluster_window_m: 0.5 # max spread of the winning cluster
+
+    # --- headless distance readout ---
+    # Compact one-line-per-tick distance log, printed by the node itself. This is
+    # the no-GUI substitute for the deleted viewer_node: it shows up in whichever
+    # pane runs depth_fusion_node, so start_all.sh headless gives you live ranges
+    # with no extra process and no X server. Detections arrive at ~45 Hz, so the
+    # latest frame is held and printed on this timer rather than every frame.
+    # 0 turns it off.
+    distance_log_hz: 1.0
+
+    # --- labels ---
+    class_labels_file: ""       # empty -> built-in 7 buoy classes

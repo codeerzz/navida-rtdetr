@@ -1,21 +1,41 @@
 #!/usr/bin/env bash
-# Minimum-overhead launcher: ZED + RT-DETR pipeline and tracker + depth fusion.
-# Nothing else. No overlay, no rviz, no distance table.
+# Minimum-overhead launcher: ZED + RT-DETR pipeline, and depth fusion. Nothing
+# else. No overlay, no rviz, no topic dump.
 #
-#   bash start_all_headless.sh
+#   bash start_all_headless.sh            # 2 panes, no GUI at all
+#   bash start_all_headless.sh overlay    # 2 panes + overlay_node, still no rviz
 #
-# This used to be `exec start_all.sh headless`, which still opened four panes:
-# the two below plus viewer_node (the live distance table, which clears and
-# repaints the screen continuously) and an idle shell. Both are gone here — the
-# table is a debugging view, and on a run you want the frame budget spent on
-# detection. Read the tracks off the topic instead when you need them:
+# `overlay` starts overlay_node alongside depth_fusion_node in pane 2 and opens
+# rqt_image_view in a third pane, so you get the annotated camera image without
+# paying for rviz. rviz is never started by this script in either mode -- that is
+# what start_all.sh is for.
+#
+# Two panes, because on a real run you want the frame budget spent on detection,
+# not on rendering. You still get live distances without any GUI: depth_fusion_node
+# prints a compact line once a second in pane 2 --
+#
+#   [dist] 2/3 ranged | red_buoy 4.21m (r=4.35 c=0.88 v=82%) | buoy NO-DEPTH (...)
+#
+# nearest first, with objects the detector saw but could not range marked NO-DEPTH.
+# Rate is the distance_log_hz parameter (0 turns it off). For every field:
 #
 #   ros2 topic echo /depth_fusion_node/tracked_objects
 #
-# start_all.sh is untouched; use it when you want the full view with rviz.
+# Use start_all.sh when you want the full view (overlay, rviz, live topic pane).
+#
+# NOT started here: the host half. After this comes up, on the host run
+#     ros2 launch usv_bringup nav2.launch.py use_sim_time:=false
+# which brings up buoy_mapper_node (plus TF, localization, Nav2).
 #
 # X/DISPLAY is still required: panes are terminator windows, same as start_all.sh.
 set -euo pipefail
+
+MODE="${1:-plain}"
+case "$MODE" in
+  plain|"") MODE="plain" ;;
+  overlay|gui) MODE="overlay" ;;
+  *) echo "usage: start_all_headless.sh [plain|overlay]"; exit 2 ;;
+esac
 
 WS_HOST="/mnt/nova_ssd/workspaces/isaac_ros-dev"
 SDIR="$WS_HOST/src/rtdetr_zed_tracker/scripts"
@@ -72,11 +92,22 @@ term() {  # $1=name $2=type $3=parent $4=order  [$5=command]
   [[headless]]
 HDR
   term root Window '""' 0
-  term row  HPaned root 0
-  term t1 Terminal row 0 pipeline
-  term t2 Terminal row 1 core      # run_tracking.sh with no overlay
+  if [ "$MODE" = overlay ]; then
+    # pipeline | fusion(+overlay_node) over the rqt_image_view pane. No rviz.
+    term vA   VPaned root 0
+    term row  HPaned vA   0
+    term t1 Terminal row 0 pipeline
+    term t2 Terminal row 1 fusion
+    term t3 Terminal vA  1 overlay
+  else
+    term row  HPaned root 0
+    term t1 Terminal row 0 pipeline
+    term t2 Terminal row 1 core      # depth_fusion_node, no overlay
+  fi
   echo "[plugins]"
 } > "$CFG"
 
-echo "Launching terminator [headless]… give the pipeline ~15 s."
+echo "Launching terminator [headless/$MODE]… give the pipeline ~15 s."
+echo "Distances appear in pane 2 as [dist] lines, once a second, nearest first."
+echo "Then, on the HOST: ros2 launch usv_bringup nav2.launch.py use_sim_time:=false"
 terminator --no-dbus -g "$CFG" -l headless

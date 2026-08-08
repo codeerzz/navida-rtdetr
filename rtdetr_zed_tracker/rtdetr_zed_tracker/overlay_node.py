@@ -95,8 +95,12 @@ class OverlayNode(Node):
             cx, cy = d.bbox.center.position.x, d.bbox.center.position.y
             w, h = d.bbox.size_x, d.bbox.size_y
             x1, y1, x2, y2 = int(cx - w / 2), int(cy - h / 2), int(cx + w / 2), int(cy + h / 2)
-            color = _color_for(d.id)
-            label = d.id if not d.results else f'{d.id} ({d.results[0].hypothesis.score:.2f})'
+            # Detections now arrive straight from RT-DETR, which sets no `id` and
+            # reports the class as a NUMERIC index. Key the colour and the label off
+            # the class instead -- there is no track id to show any more.
+            cls = d.results[0].hypothesis.class_id if d.results else ''
+            color = _color_for(str(cls))
+            label = str(cls) if not d.results else f'{cls} ({d.results[0].hypothesis.score:.2f})'
             cv2.rectangle(canvas, (x1, y1), (x2, y2), color, 2)
             cv2.putText(canvas, label, (x1, max(0, y1 - 6)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA)

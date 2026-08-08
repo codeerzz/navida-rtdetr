@@ -1,14 +1,33 @@
 #!/usr/bin/env bash
-# One-command launcher — opens the tracking stack in a SINGLE terminator window with
-# split panes. Runs on the HOST (Jetson).
+# One-command launcher — opens EVERYTHING that has to run inside the container, in a
+# SINGLE terminator window with split panes. Runs on the HOST (Jetson).
 #
-#   bash start_all.sh              # FULL: 3x2 grid, with overlay + rviz (default)
-#   bash start_all.sh headless     # HEADLESS: 2x2, no GUI (pipeline+tracker+fusion+table)
+#   bash start_all.sh              # FULL: 2x2, with overlay + rviz (default)
+#   bash start_all.sh headless     # HEADLESS: 2x2, no GUI
 #
-# FULL panes:      1 pipeline        2 tracker+fusion (+overlay)
-#                  3 distance table  4 rviz (3D markers + overlay image display)
-# HEADLESS panes:  1 pipeline        2 tracker+fusion (NO overlay)
-#                  3 distance table  4 free shell
+# FULL panes:      1 pipeline (ZED + RT-DETR)   2 depth fusion + overlay
+#                  3 full topic stream          4 rviz (3D markers + overlay image)
+# HEADLESS panes:  1 pipeline (ZED + RT-DETR)   2 depth fusion, NO overlay
+#                  3 full topic stream          4 free shell
+#
+# Live distances need no GUI and no dedicated pane: depth_fusion_node prints a
+# compact line once a second in pane 2, nearest object first --
+#
+#   [dist] 2/3 ranged | red_buoy 4.21m (r=4.35 c=0.88 v=82%) | buoy NO-DEPTH (...)
+#
+# Rate is the distance_log_hz parameter in config/fusion_params.yaml (0 = off).
+#
+# The pipeline is three stages and only the first two live in this container:
+#
+#     RT-DETR  ->  whole-box depth density clustering  ->  world-frame tracking
+#     (pane 1)     (pane 2, depth_fusion_node)            (HOST, buoy_mapper_node)
+#
+# There is no tracker pane any more — the image-space ByteTrack node is gone and
+# depth_fusion_node consumes RT-DETR detections directly.
+#
+# NOT started here: the host half. After this comes up, on the host run
+#     ros2 launch usv_bringup nav2.launch.py use_sim_time:=false
+# which brings up buoy_mapper_node (plus TF, localization, Nav2).
 #
 # Cold-starts the container first (via the unmodified run_dev.sh) if it isn't running.
 # Panes attach with `docker exec` directly (see _attach.sh). Overlay is enabled only in
@@ -36,6 +55,16 @@ is_up(){ [ -n "$(docker ps -q --filter "name=$CONTAINER" --filter status=running
 
 # 1) make sure the container is up (own terminator process via --no-dbus so it does not
 #    hijack the grid launch below)
+# Refuse to stack a second pipeline on a running one: this script skips the cold
+# start when the container is up but does not stop panes already attached to it, so
+# a second launch leaves two zed_node instances fighting over the camera device.
+if is_up && docker exec "$CONTAINER" pgrep -f "isaac_ros_examples.launch.py" >/dev/null 2>&1; then
+  echo "A pipeline is already running in $CONTAINER."
+  echo "Stop it first (Ctrl-C in its pane), or stop the container:"
+  echo "    docker stop $CONTAINER"
+  exit 1
+fi
+
 if ! is_up; then
   echo "Container not running — cold-starting (keep the 'container host' window open)…"
   terminator --no-dbus --title="container host (keep open)" -e "bash '$SDIR/_coldstart.sh'" &
@@ -75,13 +104,13 @@ HDR
   term t1 Terminal rowT 0 pipeline
   if [ "$MODE" = full ]; then
     # 2x2 with overlay (viewed in rviz's image display) + rviz markers
-    term t2 Terminal rowT 1 tracking
-    term t3 Terminal rowB 0 viewer
+    term t2 Terminal rowT 1 fusion
+    term t3 Terminal rowB 0 topics
     term t4 Terminal rowB 1 rviz
   else
     # 2x2, no GUI
     term t2 Terminal rowT 1 core
-    term t3 Terminal rowB 0 viewer
+    term t3 Terminal rowB 0 topics
     term t4 Terminal rowB 1 shell
   fi
   echo "[plugins]"
@@ -90,6 +119,7 @@ HDR
 echo "Launching terminator [$MODE]…"
 if [ "$MODE" = full ]; then
   echo "Give the pipeline ~15 s. In rviz, enable the 'Overlay' image display to see boxes."
+  echo "Then, on the HOST: ros2 launch usv_bringup nav2.launch.py use_sim_time:=false"
 fi
 # --no-dbus so THIS invocation reads our -g config (its 'tracking' layout) rather than
 # being served by an already-running terminator that never loaded it.

@@ -36,7 +36,7 @@ def test_sample_ignores_out_of_range_and_uses_median():
     raw = np.full((40, 40), 3000, dtype=np.uint16)   # 3 m
     raw[:, :20] = 0                                    # left half invalid
     m, invalid = depth_to_metres(raw, '16uc1')
-    z, ratio, valid, center = sample_box_depth(m, invalid, [0, 0, 40, 40], roi_shrink=1.0)
+    z, ratio, valid, center = sample_box_depth(m, invalid, [0, 0, 40, 40])
     assert valid and np.isclose(z, 3.0)
     assert 0.4 < ratio < 0.6                           # ~half valid
 
@@ -45,8 +45,35 @@ def test_min_ratio_gate_rejects_sparse_depth():
     raw = np.zeros((40, 40), dtype=np.uint16)
     raw[0, 0] = 3000                                   # a single valid pixel
     m, invalid = depth_to_metres(raw, '16uc1')
-    z, ratio, valid, _ = sample_box_depth(m, invalid, [0, 0, 40, 40], roi_shrink=1.0, min_ratio=0.15)
+    z, ratio, valid, _ = sample_box_depth(m, invalid, [0, 0, 40, 40], min_ratio=0.15)
     assert valid is False and z is None
+
+
+def test_min_valid_px_gate_rejects_tiny_sample_even_if_ratio_passes():
+    """A 3x3 box with 1 valid pixel is ratio=0.11 (already fails), but a 3x3 box
+    with ALL 9 pixels valid still isn't a meaningful sample -- min_valid_px must
+    reject it independent of ratio."""
+    raw = np.full((3, 3), 3000, dtype=np.uint16)       # 9/9 valid, ratio=1.0
+    m, invalid = depth_to_metres(raw, '16uc1')
+    z, ratio, valid, _ = sample_box_depth(m, invalid, [0, 0, 3, 3], min_valid_px=15)
+    assert valid is False and z is None and ratio == 1.0
+
+
+def test_dense_cluster_wins_over_larger_spread_group():
+    """The whole box is scanned (no center-crop), so it can include a spread-out
+    background/noise group alongside the real object. A plain median over all
+    pixels would land inside the spread group's range and be wrong; picking the
+    densest cluster instead should lock onto the tight buoy group even though it
+    has fewer pixels than the spread group."""
+    vals = np.concatenate([
+        np.full(15, 2.0),                      # buoy: tight cluster at 2.0 m
+        np.linspace(5.0, 10.0, 20),             # background/noise: spread thin
+    ]).astype(np.float32).reshape(5, 7)
+    invalid = np.zeros_like(vals, dtype=bool)
+    m = vals.astype(np.float64)
+    z, ratio, valid, _ = sample_box_depth(m, invalid, [0, 0, 7, 5])
+    assert valid
+    assert np.isclose(z, 2.0, atol=0.05), f'expected the dense buoy cluster (2.0m), got {z}'
 
 
 def test_coordinate_step1_source_to_depth_scale():
