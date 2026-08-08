@@ -26,6 +26,20 @@ Runs inside the Isaac ROS container on Jetson AGX Orin (ROS 2 Humble, Fast DDS).
                                                                           (live stdout table)
 ```
 
+**Color refinement is a third, optional, independent stage.** `color_classification_node` subscribes to
+the same ZED color image + `/tracker_node/tracks_2d` and re-checks `red_buoy`/`green_buoy` tracks with a
+lighting-robust YCrCb threshold (see `rtdetr_zed_tracker/color_classifier.py`), majority-voting per track
+before correcting the label on `~/tracks_color_refined`. It fixes color flips under water reflections and
+shadows — the RGB detector's own color guess is otherwise trusted as-is. Toggle with the
+`enable_color_refinement` launch arg; disabling it does not affect `tracker_node` or `depth_fusion_node`.
+
+**Optional: decouple shape from color without retraining.** RT-DETR was trained on 7 classes that bundle
+shape and color together (`red_buoy`, `green_buoy`, `north_buoy`, ...). `class_remap_node` (default off —
+`enable_class_remap` launch arg) sits *before* `tracker_node` and collapses those to a single generic
+`buoy` (see `config/class_remap.yaml`), so `tracker_node` never needs to be touched. Pair it with
+`color_classification_node` (which treats `buoy` as colorable by default) to have YCrCb decide red vs.
+green instead of trusting the class RT-DETR was trained to predict.
+
 **RGB tracking and depth are separate by design.** `tracker_node` is pure RGB (Kalman + ByteTrack on
 detections — no depth). `depth_fusion_node` takes each RGB track box, samples ZED depth in its central
 ROI, deprojects to (X, Y, Z), and smooths per-track. Depth is *fused onto* tracks, never used to track.

@@ -1,0 +1,11 @@
+# Deliberately conservative: catches real bugs (unused imports/vars, undefined
+# names, syntax errors) without re-litigating existing style choices (import
+# order, dict-literal vs dict() calls, import-outside-toplevel, etc.) across
+# files this change didn't touch. The whole tree passes this selection today --
+# see `make lint` / .github/workflows/pr-checks.yml. Widen `select` deliberately,
+# not by accident: re-run `ruff check` over the full tree first and fix (or
+# explicitly scope down) whatever it finds before tightening this file.
+target-version = "py310"   # matches ROS 2 Humble's Python
+
+[lint]
+select = ["F", "E9"]

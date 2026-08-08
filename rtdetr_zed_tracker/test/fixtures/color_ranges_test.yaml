@@ -1,0 +1,16 @@
+# Fixed, known-good YCrCb ranges used ONLY by test_color_classifier.py.
+#
+# Deliberately a SEPARATE file from ../../config/color_ranges.yaml: that one gets
+# recalibrated against the real robot's real camera on the water (see
+# scripts/webcam_color_demo.py --calibrate) and must be free to change without
+# breaking `make test`. These values are the ones validated against the
+# synthetic-swatch YCrCb math worked out in test_color_classifier.py's own
+# comments -- don't recalibrate this file from real footage, it's fixture data,
+# not production config.
+
+red:
+  - [20, 210, 155, 225, 85, 120]     # clear red hue (normal light -> moderate glare/shadow)
+  - [210, 255, 133, 156, 118, 135]   # specular highlight on red (blown-out, barely chromatic)
+
+green:
+  - [20, 245, 60, 122, 75, 125]

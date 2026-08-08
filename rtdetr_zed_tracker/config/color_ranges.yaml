@@ -1,0 +1,34 @@
+# YCrCb color ranges for buoy color refinement (color_classification_node).
+#
+# Each color maps to a LIST of [y_min, y_max, cr_min, cr_max, cb_min, cb_max]
+# ranges (0-255, cv2.COLOR_BGR2YCrCb convention). A color may declare more than
+# one range -- a pixel counts toward that color if it falls in ANY of its ranges.
+#
+# `red` deliberately has two: a "clear red hue" range that covers normal
+# daylight through moderate glare/shadow, plus a narrow, high-Y "specular
+# highlight" range for the near-blown-out, barely-chromatic patch a strong glint
+# leaves on a red hull (Y very high, Cr/Cb pulled toward neutral 128). One range
+# alone misses that highlight case. `green` doesn't need the second range in our
+# testing so far -- add one the same way if it turns out to.
+#
+# CALIBRATION STATUS:
+#   red range 1 (clear hue)   -- calibrated from real webcam captures of the
+#                                actual buoy (scripts/webcam_color_demo.py
+#                                --calibrate red, 2 samples, tool-checked for
+#                                overlap against `green` -- see git history for
+#                                the earlier too-wide attempt this replaced).
+#   red range 2 (highlight),
+#   green                     -- STILL PLACEHOLDER, derived from synthetic
+#                                swatches (see test/test_color_classifier.py),
+#                                not real footage yet. Calibrate these the same
+#                                way before trusting them on the water.
+#
+# `make test` runs test_production_color_ranges_do_not_overlap against this
+# file on every change -- keep it green.
+
+red:
+  - [65, 142, 134, 209, 100, 136]     # clear red hue -- calibrated from real footage
+  - [210, 255, 133, 156, 118, 135]    # specular highlight on red (still placeholder)
+
+green:
+  - [20, 245, 60, 122, 75, 125]       # still placeholder

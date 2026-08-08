@@ -17,6 +17,13 @@
   <depend>rtdetr_zed_tracker_msgs</depend>
 
   <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-scipy</exec_depend>
+  <exec_depend>python3-ultralytics</exec_depend>
+  <!-- Already used directly by tracker_node.py (yaml) and overlay_node.py (cv2) but were
+       missing here; adding explicitly rather than relying on cv_bridge pulling opencv in
+       transitively. -->
+  <exec_depend>python3-yaml</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
 
   <test_depend>python3-pytest</test_depend>
 

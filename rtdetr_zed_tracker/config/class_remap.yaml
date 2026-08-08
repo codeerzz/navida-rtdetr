@@ -1,0 +1,20 @@
+# Maps each RT-DETR class index to a canonical index BEFORE tracker_node ever
+# sees it (class_remap_node sits between raw detections and tracker_node).
+#
+# Default: collapse all 7 trained classes (see class_labels.yaml: 0=buoy,
+# 1=east_buoy, 2=green_buoy, 3=north_buoy, 4=red_buoy, 5=south_buoy,
+# 6=west_buoy) into a single generic "buoy" (index 0) -- shape only, no
+# retraining needed. Pair with color_classification_node (which already treats
+# "buoy" as colorable by default) to have YCrCb decide red vs green instead of
+# trusting the class RT-DETR was trained to predict.
+#
+# To keep cardinal marks distinct instead of collapsing everything, delete the
+# lines for 1/3/5/6 below -- anything not listed here passes through unchanged.
+
+0: 0   # buoy       -> buoy
+1: 0   # east_buoy  -> buoy
+2: 0   # green_buoy -> buoy
+3: 0   # north_buoy -> buoy
+4: 0   # red_buoy   -> buoy
+5: 0   # south_buoy -> buoy
+6: 0   # west_buoy  -> buoy
