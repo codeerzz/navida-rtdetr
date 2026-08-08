@@ -1,10 +1,14 @@
 """ROS 2 node: RT-DETR Detection2DArray -> class-index remap -> Detection2DArray.
 
-Sits between the raw RT-DETR output and tracker_node (see class_remap.yaml's
-default_value in tracking.launch.py) so multi-class detections can be collapsed
-to a single generic shape WITHOUT retraining the model or touching tracker_node
-itself: point tracker_node's ``detections_topic`` at this node's output instead
-of ``/detections_output`` directly.
+First of the two optional enrichment stages in tracking.launch.py, sitting between
+the raw RT-DETR output and whatever consumes it next (color_classification_node
+when that stage is on, otherwise depth_fusion_node). Collapses multi-class
+detections to a single generic shape WITHOUT retraining the model and without any
+downstream node knowing this stage exists -- the launch file just points the next
+stage's input at this node's output instead of ``/detections_output``.
+
+Index in, index out: this node never converts to label names, which is what keeps
+it compatible with depth_fusion_node's ``int(class_id)``.
 
 Never drops a detection -- class indices missing from the mapping pass through
 with their original value unchanged (fail safe, not fail silent).

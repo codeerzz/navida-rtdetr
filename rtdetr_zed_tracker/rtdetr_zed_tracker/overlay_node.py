@@ -11,10 +11,12 @@ slow scenes.
 from __future__ import annotations
 
 import hashlib
+import math
 from collections import deque
 
 import cv2
 import rclpy
+import yaml
 from cv_bridge import CvBridge
 from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.node import Node
@@ -28,6 +30,22 @@ def _color_for(track_id: str):
     return int(h[0]), int(h[1]), int(h[2])  # BGR
 
 
+def _clamp_box(cx, cy, w, h, img_w, img_h):
+    """Centre+size -> integer (x1, y1, x2, y2) clipped to the image, or None.
+
+    None means the box carried a non-finite coordinate, so there is nothing
+    meaningful to draw. Everything else is clipped rather than rejected: a box
+    that merely runs off the edge is still worth showing the visible part of.
+    """
+    if not all(math.isfinite(v) for v in (cx, cy, w, h)):
+        return None
+    x1 = int(min(max(cx - w / 2, 0.0), img_w))
+    y1 = int(min(max(cy - h / 2, 0.0), img_h))
+    x2 = int(min(max(cx + w / 2, 0.0), img_w))
+    y2 = int(min(max(cy + h / 2, 0.0), img_h))
+    return x1, y1, x2, y2
+
+
 class OverlayNode(Node):
     def __init__(self):
         super().__init__('overlay_node')
@@ -37,6 +55,11 @@ class OverlayNode(Node):
         self.match_tol_ms = self.declare_parameter(
             'match_tolerance_ms', 100.0,
             ParameterDescriptor(description='max stamp diff to accept an image<->tracks match (ms)')).value
+        labels_file = self.declare_parameter(
+            'class_labels_file', '',
+            ParameterDescriptor(description='YAML index->name, so boxes read "red_buoy" '
+                                            'instead of "4"; empty = draw class_id verbatim')).value
+        self.index_to_name = self._load_labels(labels_file)
 
         self.bridge = CvBridge()
         self.images = deque(maxlen=int(self.buffer_len))   # (stamp_ns, bgr image)
@@ -53,7 +76,30 @@ class OverlayNode(Node):
         self.create_subscription(Detection2DArray, '~/tracks_2d', self.on_tracks, track_qos)
         self.pub = self.create_publisher(Image, '~/tracks_overlay', pub_qos)
         self._miss = 0
-        self.get_logger().info('overlay_node up (stamp-matched; subs ~/image, ~/tracks_2d)')
+        self.get_logger().info(
+            f'overlay_node up (stamp-matched; subs ~/image, ~/tracks_2d; '
+            f'{len(self.index_to_name)} class labels)')
+
+    def _load_labels(self, path):
+        """index->name, or {} to draw class_id as-is. Purely cosmetic, so a bad file
+        is a warning and an unlabelled overlay, never a reason not to draw."""
+        if not path:
+            return {}
+        try:
+            with open(path) as f:
+                return {int(k): str(v) for k, v in (yaml.safe_load(f) or {}).items()}
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().warn(f'labels load failed {path}: {e}; drawing raw class ids')
+            return {}
+
+    def _label_for(self, class_id):
+        """Readable name for a class_id. Falls through to the raw value for anything
+        that isn't a mapped index, which covers both name-space input and an index
+        the label file doesn't know."""
+        try:
+            return self.index_to_name.get(int(class_id), str(class_id))
+        except (ValueError, TypeError):
+            return str(class_id)
 
     @staticmethod
     def _ns(stamp):
@@ -91,16 +137,29 @@ class OverlayNode(Node):
                                        f'(count={self._miss}); check image buffer / tolerance')
             return
         canvas = canvas.copy()
+        img_h, img_w = canvas.shape[:2]
         for d in msg.detections:
             cx, cy = d.bbox.center.position.x, d.bbox.center.position.y
             w, h = d.bbox.size_x, d.bbox.size_y
-            x1, y1, x2, y2 = int(cx - w / 2), int(cy - h / 2), int(cx + w / 2), int(cy + h / 2)
+            # Clamp to the canvas. Drawing outside it is a no-op anyway, but an
+            # out-of-range box is not merely useless here: a coordinate beyond
+            # int32 (seen live from a degenerate/garbage detection) makes cv2
+            # reject the point outright -- "Can't parse 'pt1'" -- and an uncaught
+            # exception in a subscription callback kills the whole node. A
+            # diagnostic overlay must never be able to take the launch down.
+            box = _clamp_box(cx, cy, w, h, img_w, img_h)
+            if box is None:                      # NaN/inf coords -- nothing to draw
+                continue
+            x1, y1, x2, y2 = box
             # Detections now arrive straight from RT-DETR, which sets no `id` and
             # reports the class as a NUMERIC index. Key the colour and the label off
             # the class instead -- there is no track id to show any more.
             cls = d.results[0].hypothesis.class_id if d.results else ''
-            color = _color_for(str(cls))
-            label = str(cls) if not d.results else f'{cls} ({d.results[0].hypothesis.score:.2f})'
+            name = self._label_for(cls)
+            # Colour keyed on the resolved NAME, so a box recoloured by
+            # color_classification_node visibly changes colour on screen.
+            color = _color_for(name)
+            label = name if not d.results else f'{name} ({d.results[0].hypothesis.score:.2f})'
             cv2.rectangle(canvas, (x1, y1), (x2, y2), color, 2)
             cv2.putText(canvas, label, (x1, max(0, y1 - 6)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA)

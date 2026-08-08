@@ -1,11 +1,11 @@
-"""ROS 2 node: refine a track's color label with YCrCb thresholding.
+"""ROS 2 node: refine a detection's color label with YCrCb thresholding.
 
 Bolted onto the pipeline as its own, independent enrichment stage -- same shape
 as overlay_node's image<->tracks stamp matching -- so it never touches
-tracker_node or depth_fusion_node. Reads the ZED color image + tracker_node's
-tracks_2d, classifies each colorable track's crop with color_classifier, and
-majority-votes the result per track id (label_vote.LabelVote) before publishing
-a refined copy of the tracks with the color-bearing part of the label corrected.
+depth_fusion_node. Reads the ZED color image + a Detection2DArray, classifies
+each colorable detection's crop with color_classifier, and majority-votes the
+result (label_vote.LabelVote) before publishing a refined copy of the message
+with the color-bearing part of the label corrected.
 
 Only labels in ``colorable_labels`` (default: buoy, red_buoy, green_buoy) are
 touched -- cardinal-mark classes (east/north/south/west_buoy) pass through
@@ -14,17 +14,53 @@ so this pairs directly with class_remap_node: if RT-DETR's 7 trained classes
 are collapsed to a single generic "buoy" upstream (no retraining needed -- see
 class_remap.yaml), this node is what actually decides red vs green.
 
-Known limitation: ``Detection2D.id`` (e.g. "red_buoy_2") is assigned once by
-tracker_node from the ORIGINAL detector class and is left alone here -- only
-``results[0].hypothesis.class_id`` is corrected. If this node overrides a track's
-color, its display id can look stale (id says "red_buoy_2", refined class_id says
-"green_buoy") until tracker_node itself is revisited, which is out of scope here.
+Name space vs index space (``class_labels_file``)
+-------------------------------------------------
+This node decides in NAME space -- ``colorable_labels`` and ``<color>_buoy`` are
+names. RT-DETR, however, puts the numeric class INDEX in ``class_id`` ("4"), and
+depth_fusion_node downstream does ``int(class_id)``. The index->name step used to
+happen in tracker_node, upstream of here; that node is gone and the mapping now
+lives downstream instead, so this node has to bridge the two itself:
+
+  class_labels_file EMPTY  -> class_id is read and written as a name. Standalone
+                              mode; this is what the unit tests exercise.
+  class_labels_file SET    -> class_id is read as an index, translated to a name
+                              to decide, and the refined name is written back as
+                              an index. This is what tracking.launch.py uses.
+
+The bridge fails safe in both directions: an index with no configured name is
+treated as not-colorable (passes through), and a refined name with no configured
+index is left alone rather than written out as a name into an index-space topic,
+which would make depth_fusion_node's int() raise on every frame.
+
+Vote keying (``vote_key``)
+--------------------------
+LabelVote needs something to key a vote on. It was written against tracker_node's
+per-track ``Detection2D.id``, which no longer exists -- raw RT-DETR detections
+carry an empty id, so keying on it would merge every box in a frame into one
+shared vote. Hence:
+
+  id    Key on ``Detection2D.id`` (the original behaviour). Only meaningful if
+        something upstream actually assigns ids.
+  grid  Key on the box centre quantised to ``vote_cell_px``. A buoy holds its
+        cell for far longer than the ~3 frames a vote needs at 45 Hz, and a cell
+        that goes unseen for a single frame is garbage-collected, so a frozen
+        vote cannot outlive the object that produced it by more than one frame.
+        This is the launch default.
+  none  No voting; decide from the current frame alone.
+
+``grid`` substitutes proximity for identity, which is weaker than a real track
+id: two same-cell objects in consecutive frames share a vote. The right long-term
+home for label voting is buoy_mapper_node on the host, which has genuine
+world-frame identity -- LabelVote is deliberately pure Python with zero ROS
+imports so it can move there unchanged.
 """
 from __future__ import annotations
 
 from collections import deque
 
 import rclpy
+import yaml
 from cv_bridge import CvBridge
 from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.node import Node
@@ -34,6 +70,8 @@ from vision_msgs.msg import Detection2DArray
 
 from .color_classifier import classify_color, load_color_ranges
 from .label_vote import LabelVote
+
+VOTE_KEYS = ('id', 'grid', 'none')
 
 
 def _desc(text):
@@ -56,6 +94,20 @@ class ColorClassificationNode(Node):
         colorable = p('colorable_labels', ['buoy', 'red_buoy', 'green_buoy'],
                      _desc('class names eligible for color refinement; others pass through untouched')).value
         self.colorable = set(colorable)
+        labels_file = p('class_labels_file', '',
+                        _desc('YAML index->name. Empty = class_id is a name; set = class_id is '
+                              'a numeric index and is translated in and out')).value
+        self.vote_key_mode = str(p('vote_key', 'id',
+                                   _desc('id|grid|none — what a colour vote is keyed on')).value).lower()
+        self.vote_cell_px = float(p('vote_cell_px', 64.0,
+                                    _desc('grid cell size (px) when vote_key=grid')).value)
+
+        if self.vote_key_mode not in VOTE_KEYS:
+            raise RuntimeError(
+                f'vote_key must be one of {VOTE_KEYS} (got: {self.vote_key_mode!r}) -- a typo here '
+                'silently falling back to per-frame decisions would look like the vote working')
+        if self.vote_key_mode == 'grid' and self.vote_cell_px <= 0.0:
+            raise RuntimeError(f'vote_cell_px must be > 0 (got: {self.vote_cell_px})')
 
         if not color_ranges_file:
             raise RuntimeError("color_classification_node requires the 'color_ranges_file' parameter")
@@ -63,9 +115,14 @@ class ColorClassificationNode(Node):
         # 'red' -> 'red_buoy' -- assumes the "<color>_buoy" naming already used by class_labels.yaml.
         self.color_to_label = {c: f'{c}_buoy' for c in self.color_ranges}
 
+        # Empty dicts mean "class_id is already a name" -- see the module docstring.
+        self.index_to_name, self.name_to_index = self._load_labels(labels_file)
+
         self.bridge = CvBridge()
         self.images = deque(maxlen=int(self.buffer_len))   # (stamp_ns, bgr image)
-        self.votes: dict[str, LabelVote] = {}               # track id -> LabelVote
+        self.votes: dict[str, LabelVote] = {}               # vote key -> LabelVote
+        self._warned_unmapped_index = set()
+        self._warned_unmapped_name = set()
 
         img_qos = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST,
                              depth=int(self.buffer_len), durability=DurabilityPolicy.VOLATILE)
@@ -74,13 +131,99 @@ class ColorClassificationNode(Node):
         pub_qos = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST,
                              depth=10, durability=DurabilityPolicy.VOLATILE)
         self.create_subscription(Image, '~/image', self.on_image, img_qos)
-        self.create_subscription(Detection2DArray, '~/tracks_2d', self.on_tracks, track_qos)
-        self.pub = self.create_publisher(Detection2DArray, '~/tracks_color_refined', pub_qos)
+        self.create_subscription(Detection2DArray, '~/detections_input', self.on_tracks, track_qos)
+        self.pub = self.create_publisher(Detection2DArray, '~/detections_color_refined', pub_qos)
         self._miss = 0
+        space = f'index ({len(self.index_to_name)} labels)' if self.index_to_name else 'name'
+        vote = (f'{self.vote_key_mode}/{self.vote_cell_px:.0f}px'
+                if self.vote_key_mode == 'grid' else self.vote_key_mode)
         self.get_logger().info(
             f'color_classification_node up: colors={list(self.color_ranges)} '
-            f'colorable={sorted(self.colorable)} min_votes={self.min_votes} '
+            f'colorable={sorted(self.colorable)} class_id_space={space} '
+            f'vote_key={vote} min_votes={self.min_votes} '
             f'roi_shrink={self.roi_shrink} min_confidence={self.min_confidence}')
+
+    # ---------------------------------------------------------------- label space
+    def _load_labels(self, path):
+        """(index->name, name->index), or two empty dicts when no file is configured.
+
+        A failed load returns empty dicts, which drops the node back to name space.
+        That is the safe direction: in name space nothing matches a numeric class_id,
+        so the node degrades to a pass-through instead of writing names onto an
+        index-space topic that depth_fusion_node would then fail to int().
+        """
+        if not path:
+            return {}, {}
+        try:
+            with open(path) as f:
+                raw = yaml.safe_load(f) or {}
+            forward = {int(k): str(v) for k, v in raw.items()}
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().error(
+                f'labels load failed {path}: {e}; falling back to name-space class_id '
+                '(this node will pass numeric class ids through unrefined)')
+            return {}, {}
+        self.get_logger().info(f'loaded {len(forward)} class labels from {path}')
+        return forward, {v: k for k, v in forward.items()}
+
+    def _to_name(self, class_id):
+        """Wire class_id -> label name, or None if it can't be named (never colorable)."""
+        if not self.index_to_name:
+            return class_id
+        try:
+            index = int(class_id)
+        except (ValueError, TypeError):
+            return None
+        name = self.index_to_name.get(index)
+        if name is None and index not in self._warned_unmapped_index:
+            self._warned_unmapped_index.add(index)
+            self.get_logger().warn(
+                f'class index {index} not in class_labels_file -> not colorable, passing through')
+        return name
+
+    def _to_class_id(self, name, original_class_id):
+        """Label name -> wire class_id, falling back to the ORIGINAL value.
+
+        A colour whose ``<colour>_buoy`` name has no configured index (a colour added
+        to color_ranges.yaml but not to class_labels.yaml) must not be written out as
+        a name here -- downstream reads this field with int(). Keeping the original
+        index loses the refinement, which is strictly better than breaking the frame.
+        """
+        if not self.name_to_index:
+            return name
+        index = self.name_to_index.get(name)
+        if index is None:
+            if name not in self._warned_unmapped_name:
+                self._warned_unmapped_name.add(name)
+                self.get_logger().warn(
+                    f'refined colour "{name}" has no index in class_labels_file -> keeping the '
+                    'original class id (add it there to let this refinement through)')
+            return original_class_id
+        return str(index)
+
+    # ---------------------------------------------------------------- vote keying
+    def _vote_key(self, d):
+        """Key this detection's colour vote, or None when voting is disabled.
+
+        ``grid`` quantises the box centre: consecutive frames of the same buoy land
+        in the same cell and therefore share a vote, which is what stands in for the
+        track id LabelVote was originally keyed on.
+        """
+        if self.vote_key_mode == 'id':
+            return d.id
+        if self.vote_key_mode == 'grid':
+            cx, cy = d.bbox.center.position.x, d.bbox.center.position.y
+            return f'{int(cx // self.vote_cell_px)}:{int(cy // self.vote_cell_px)}'
+        return None
+
+    def _seen_keys(self, msg: Detection2DArray) -> set:
+        """Vote keys this message accounts for -- what _gc_votes keeps.
+
+        Built from EVERY detection, not just the colorable ones: a non-colorable
+        detection still occupies its grid cell, and keeping that cell's entry alive
+        is the honest reading of "something is still there".
+        """
+        return {k for k in (self._vote_key(d) for d in msg.detections) if k is not None}
 
     # ---------------------------------------------------------------- image buffer
     @staticmethod
@@ -110,6 +253,38 @@ class ColorClassificationNode(Node):
         return best if best_d is not None and best_d <= self.match_tol_ms * 1e6 else None
 
     # ---------------------------------------------------------------- main callback
+    def _decide_colour(self, d, image):
+        """Colour for one detection, or None if undecided.
+
+        ``image`` None means no frame matched this message's stamp, so there is no
+        new observation to make. That is NOT a reason to throw away a decision the
+        vote already reached: surviving a dropped frame is precisely what freezing
+        a vote is for. Republishing the detector's own colour guess instead made
+        the published label flicker between the detector's class and the refined
+        one at exactly the rate the image stream dropped frames (~16 % of frames
+        on the Jetson, where four nodes share the full-res colour image over UDP).
+        """
+        key = self._vote_key(d)
+        if image is None:
+            vote = self.votes.get(key)
+            return vote.current_best if vote is not None else None
+
+        h_img, w_img = image.shape[:2]
+        cx, cy = d.bbox.center.position.x, d.bbox.center.position.y
+        w, h = d.bbox.size_x, d.bbox.size_y
+        x1 = max(0, int(cx - w / 2))
+        y1 = max(0, int(cy - h / 2))
+        x2 = min(w_img, int(cx + w / 2))
+        y2 = min(h_img, int(cy + h / 2))
+        crop = image[y1:y2, x1:x2]
+
+        result = classify_color(crop, self.color_ranges, self.roi_shrink, self.min_confidence)
+        if key is None:                      # vote_key='none' -- this frame decides alone
+            return result.label
+        vote = self.votes.setdefault(key, LabelVote(min_votes=self.min_votes))
+        vote.add(result.label)
+        return vote.current_best
+
     def on_tracks(self, msg: Detection2DArray):
         image = self._match_image(self._ns(msg.header.stamp))
         if image is None:
@@ -117,47 +292,42 @@ class ColorClassificationNode(Node):
             if self._miss % 30 == 1:
                 self.get_logger().warn(
                     f'no image within tolerance for a tracks stamp (count={self._miss}); '
-                    'passing tracks through unrefined')
-            self.pub.publish(msg)   # degrade gracefully rather than drop the whole message
-            return
+                    'applying frozen votes only, adding none')
 
-        h_img, w_img = image.shape[:2]
         out = Detection2DArray()
         out.header = msg.header
         for d in msg.detections:
-            original_label = d.results[0].hypothesis.class_id if d.results else None
+            original_class_id = d.results[0].hypothesis.class_id if d.results else None
+            original_label = self._to_name(original_class_id) if d.results else None
             if original_label not in self.colorable:
                 out.detections.append(d)
                 continue
 
-            cx, cy = d.bbox.center.position.x, d.bbox.center.position.y
-            w, h = d.bbox.size_x, d.bbox.size_y
-            x1 = max(0, int(cx - w / 2))
-            y1 = max(0, int(cy - h / 2))
-            x2 = min(w_img, int(cx + w / 2))
-            y2 = min(h_img, int(cy + h / 2))
-            crop = image[y1:y2, x1:x2]
-
-            result = classify_color(crop, self.color_ranges, self.roi_shrink, self.min_confidence)
-            vote = self.votes.setdefault(d.id, LabelVote(min_votes=self.min_votes))
-            vote.add(result.label)
-
-            refined_color = vote.current_best
+            refined_color = self._decide_colour(d, image)
             if refined_color is not None:
                 refined_label = self.color_to_label.get(refined_color)
                 if refined_label is not None and refined_label != original_label:
-                    d.results[0].hypothesis.class_id = refined_label
+                    d.results[0].hypothesis.class_id = self._to_class_id(
+                        refined_label, original_class_id)
             out.detections.append(d)
 
-        self._gc_votes(seen={d.id for d in msg.detections})
+        # GC on both paths. The detections message is authoritative about what is
+        # still present whether or not an image turned up to classify it, and
+        # skipping this leaked a vote per vanished object for as long as the image
+        # stream was unhealthy -- exactly when votes are most stale.
+        self._gc_votes(self._seen_keys(msg))
         self.pub.publish(out)
 
     def _gc_votes(self, seen: set):
-        """A track id absent from tracks_2d has been dropped by the ByteTracker
-        itself (it always republishes every still-alive confirmed track, matched
-        or not) -- so it's safe to drop that id's vote state here too."""
-        for tid in [t for t in self.votes if t not in seen]:
-            del self.votes[tid]
+        """Drop vote state for every key that this frame did not produce.
+
+        With vote_key='grid' this is what stops a frozen vote from outliving the
+        object that produced it: a cell the objects have moved out of is cleared on
+        the very next frame, so a different buoy that later enters that cell starts
+        its own vote from scratch rather than inheriting a stale frozen colour.
+        """
+        for key in [k for k in self.votes if k not in seen]:
+            del self.votes[key]
 
 
 def main(args=None):

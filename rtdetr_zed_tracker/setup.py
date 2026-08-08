@@ -25,8 +25,7 @@ setup(
     entry_points={
         'console_scripts': [
             'depth_fusion_node = rtdetr_zed_tracker.depth_fusion_node:main',
-            'viewer_node = rtdetr_zed_tracker.viewer_node:main',
-            'yolo_world_node = rtdetr_zed_tracker.yolo_world_node:main',
+            'overlay_node = rtdetr_zed_tracker.overlay_node:main',
             'color_classification_node = rtdetr_zed_tracker.color_classification_node:main',
             'class_remap_node = rtdetr_zed_tracker.class_remap_node:main',
         ],

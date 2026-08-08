@@ -2,8 +2,8 @@
 
 Lets you treat all (or a chosen subset of) RT-DETR's trained classes as one
 generic shape WITHOUT retraining the model: remap every incoming class index to
-a canonical one before it reaches tracker_node, then let a separate stage (e.g.
-color_classification_node) decide the color-bearing part of the label
+a canonical one before it reaches the rest of the graph, then let a separate
+stage (e.g. color_classification_node) decide the color-bearing part of the label
 independently. Same shape/semantics split all_seaing_perception's LiDAR+camera
 pipeline uses (see the object-tracking comparison report) -- applied here to an
 already-trained multi-class detector via a lookup table instead of a retrain.

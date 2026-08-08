@@ -45,6 +45,15 @@ WS_HOST="/mnt/nova_ssd/workspaces/isaac_ros-dev"
 SDIR="$WS_HOST/src/rtdetr_zed_tracker/scripts"
 CONTAINER="isaac_ros_dev-aarch64-container"
 
+# Which _attach.sh stage fills pane 2, per mode. Overridable so a sibling launcher
+# can reuse this whole layout -- cold start, duplicate-pipeline guard, terminator
+# config -- with a different flavour of the fusion pane instead of copying 130
+# lines that would then drift. start_all_color.sh is the one caller that sets
+# these; unset, they are exactly the colour-free stages this script always used.
+FUSION_STAGE="${RTDETR_FUSION_STAGE:-fusion}"   # FULL mode, pane 2
+CORE_STAGE="${RTDETR_CORE_STAGE:-core}"         # HEADLESS mode, pane 2
+BANNER="${RTDETR_BANNER:-$MODE}"                # what the launch message calls this
+
 if ! command -v terminator >/dev/null 2>&1; then
   echo "terminator is not installed. Install it once with:"
   echo "    sudo apt-get update && sudo apt-get install -y terminator"
@@ -104,19 +113,19 @@ HDR
   term t1 Terminal rowT 0 pipeline
   if [ "$MODE" = full ]; then
     # 2x2 with overlay (viewed in rviz's image display) + rviz markers
-    term t2 Terminal rowT 1 fusion
+    term t2 Terminal rowT 1 "$FUSION_STAGE"
     term t3 Terminal rowB 0 topics
     term t4 Terminal rowB 1 rviz
   else
     # 2x2, no GUI
-    term t2 Terminal rowT 1 core
+    term t2 Terminal rowT 1 "$CORE_STAGE"
     term t3 Terminal rowB 0 topics
     term t4 Terminal rowB 1 shell
   fi
   echo "[plugins]"
 } > "$CFG"
 
-echo "Launching terminator [$MODE]…"
+echo "Launching terminator [$BANNER]…"
 if [ "$MODE" = full ]; then
   echo "Give the pipeline ~15 s. In rviz, enable the 'Overlay' image display to see boxes."
   echo "Then, on the HOST: ros2 launch usv_bringup nav2.launch.py use_sim_time:=false"

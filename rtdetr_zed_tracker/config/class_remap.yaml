@@ -1,5 +1,6 @@
-# Maps each RT-DETR class index to a canonical index BEFORE tracker_node ever
-# sees it (class_remap_node sits between raw detections and tracker_node).
+# Maps each RT-DETR class index to a canonical index before anything downstream
+# sees it (class_remap_node is the first optional stage in tracking.launch.py,
+# sitting between the raw detections and color_classification_node/depth_fusion_node).
 #
 # Default: collapse all 7 trained classes (see class_labels.yaml: 0=buoy,
 # 1=east_buoy, 2=green_buoy, 3=north_buoy, 4=red_buoy, 5=south_buoy,

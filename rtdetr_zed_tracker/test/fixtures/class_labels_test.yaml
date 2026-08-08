@@ -1,0 +1,16 @@
+# Class index -> name, used ONLY by test_color_classification_node.py's
+# index-space tests.
+#
+# Separate from ../../config/class_labels.yaml for the same reason
+# color_ranges_test.yaml is separate from the real ranges: this is fixture data
+# pinned to what those tests assert, not production config that tracks whatever
+# the deployed RT-DETR model was trained on.
+#
+# Index 5 is deliberately absent so a test can cover the "index has no configured
+# name" path (must pass through as not-colorable, never crash). "green_buoy" is
+# deliberately absent as a NAME so another test can cover the reverse gap: a
+# refined colour with no index to write back must keep the original class id
+# rather than write a name onto an index-space topic.
+0: buoy
+2: red_buoy
+3: north_buoy
