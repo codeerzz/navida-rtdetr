@@ -6,20 +6,41 @@
 # `/bin/bash $@` (unquoted), which word-splits any multi-word forwarded command, so
 # nothing actually runs. That is why panes opened into the container but launched
 # nothing. Attaching here instead makes the command survive intact.
+#
+# Stages, in the order a run needs them:
+#
+#   pipeline   ZED driver + RT-DETR (TensorRT). Everything else waits on this.
+#   fusion     depth_fusion_node + overlay_node  -- the container half of the stack
+#   core       depth_fusion_node only, no overlay -- same thing minus the GUI cost
+#   topics     live dump of the node's output, the readable "is it working" pane
+#   overlay    rqt_image_view on the overlay image (needs `fusion`, not `core`)
+#   rviz       rviz2 with the 3D marker config
+#   shell      sourced shell, nothing running
+#
+# There is no `tracker` stage any more: the image-space ByteTrack node is gone and
+# depth_fusion_node consumes RT-DETR detections directly. Identity is established
+# on the HOST by buoy_mapper_node from world geometry, not in this container.
 set -u
 CONTAINER="isaac_ros_dev-aarch64-container"
 WS="/workspaces/isaac_ros-dev"          # path INSIDE the container
 S="$WS/src/rtdetr_zed_tracker/scripts"
 
+# Sourcing + the UDP profile, needed by every stage that talks to the pipeline.
+# Our nodes are separate DDS participants and only receive pipeline data over UDP
+# here (Fast DDS SHM does not deliver to them). See NOTES.md §7.
+ENV_PREAMBLE="source /opt/ros/humble/setup.bash; \
+source \$ISAAC_ROS_WS/install/setup.bash 2>/dev/null; \
+export FASTRTPS_DEFAULT_PROFILES_FILE=\$ISAAC_ROS_WS/src/rtdetr_zed_tracker/udp_only_profile.xml"
+
 case "${1:-}" in
   pipeline) CMD="bash '$S/pipeline.sh'" ;;
-  tracking) CMD="bash '$S/run_tracking.sh' enable_overlay:=true" ;;   # tracker + fusion + overlay
-  core)     CMD="bash '$S/run_tracking.sh'" ;;                        # tracker + fusion, NO overlay
-  viewer)   CMD="bash '$S/run_viewer.sh'" ;;
+  fusion)   CMD="bash '$S/run_tracking.sh' enable_overlay:=true" ;;
+  core)     CMD="bash '$S/run_tracking.sh'" ;;
+  topics)   CMD="$ENV_PREAMBLE; bash '$S/run_topics.sh'" ;;
   overlay)  CMD="bash '$S/run_overlay_view.sh'" ;;
   rviz)     CMD="bash '$S/run_rviz.sh'" ;;
-  shell)    CMD="source /opt/ros/humble/setup.bash; source \$ISAAC_ROS_WS/install/setup.bash 2>/dev/null; export FASTRTPS_DEFAULT_PROFILES_FILE=\$ISAAC_ROS_WS/src/rtdetr_zed_tracker/udp_only_profile.xml; echo 'sourced + UDP profile set — try: ros2 topic echo /depth_fusion_node/tracked_objects'" ;;
-  *)        echo "unknown stage '${1:-}' (use: pipeline|tracking|core|viewer|overlay|rviz|shell)"; exec bash ;;
+  shell)    CMD="$ENV_PREAMBLE; echo 'sourced + UDP profile set — try: ros2 topic echo /depth_fusion_node/tracked_objects'" ;;
+  *)        echo "unknown stage '${1:-}' (use: pipeline|fusion|core|topics|overlay|rviz|shell)"; exec bash ;;
 esac
 
 if [ -z "$(docker ps -q --filter "name=$CONTAINER" --filter status=running 2>/dev/null)" ]; then

@@ -92,17 +92,20 @@ def sample_box_depth(depth_m, invalid, box_depth_xyxy, min_valid=0.3, max_valid=
     if ratio < min_ratio or vals.size < min_valid_px:
         return None, ratio, False, center
 
-    # densest window of width cluster_window_m along the sorted depth axis
-    # (two-pointer: j only ever advances, so this is O(n) despite the loop)
-    n = vals.size
-    j = 0
-    best_i, best_j, best_count = 0, 0, 0
-    for i in range(n):
-        if j < i:
-            j = i
-        while j + 1 < n and vals[j + 1] - vals[i] <= cluster_window_m:
-            j += 1
-        if j - i + 1 > best_count:
-            best_count, best_i, best_j = j - i + 1, i, j
-    z = float(np.median(vals[best_i:best_j + 1]))
+    # Densest window of width cluster_window_m along the sorted depth axis.
+    #
+    # This is the two-pointer sweep, vectorised. The scalar version -- advance j
+    # while vals[j+1] - vals[i] <= window, for each i -- is O(n), but n here is the
+    # number of VALID PIXELS IN THE BOX, so a near buoy runs the loop >100k times
+    # per detection per frame. Measured on Orin: 108 ms for a 320x480 box, which
+    # cannot keep up with a 45 Hz pipeline (see scripts/benchmark_components.py).
+    #
+    # searchsorted does the identical thing in C: for each i it finds the first
+    # index whose depth exceeds vals[i] + window, so that index minus i IS the
+    # count the scalar loop would have arrived at. argmax takes the first maximum,
+    # matching the strict `>` of the original. Same cluster, same median, ~100x
+    # faster -- verified equal on 3000 randomised clustered/uniform scenes.
+    hi = np.searchsorted(vals, vals + cluster_window_m, side='right')
+    best_i = int(np.argmax(hi - np.arange(vals.size)))
+    z = float(np.median(vals[best_i:int(hi[best_i])]))
     return z, ratio, True, center

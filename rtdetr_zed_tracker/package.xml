@@ -3,7 +3,7 @@
 <package format="3">
   <name>rtdetr_zed_tracker</name>
   <version>0.0.0</version>
-  <description>RT-DETR + ByteTrack + ZED depth 3D object tracking (per-object stable ID, class, distance).</description>
+  <description>RT-DETR + whole-box ZED depth density clustering -> 3D object positions (class, distance).</description>
   <maintainer email="a_metehan-tr@hotmail.com">metehan</maintainer>
   <license>Apache-2.0</license>
 
@@ -17,8 +17,6 @@
   <depend>rtdetr_zed_tracker_msgs</depend>
 
   <exec_depend>python3-numpy</exec_depend>
-  <exec_depend>python3-scipy</exec_depend>
-  <exec_depend>python3-ultralytics</exec_depend>
 
   <test_depend>python3-pytest</test_depend>
 
