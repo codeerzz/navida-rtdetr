@@ -30,6 +30,7 @@ it as a merge gate.
 from __future__ import annotations
 
 import os
+import tempfile
 
 import numpy as np
 import pytest
@@ -104,6 +105,12 @@ def _solid_bgr(bgr, size=(200, 300)):
 
 @pytest.fixture(scope='module', autouse=True)
 def ros_context():
+    # rclpy.init() tries to create a log dir under $ROS_LOG_DIR / $ROS_HOME /
+    # ~/.ros -- on some CI runners that resolves to a path the job can't write
+    # to (e.g. "Failed to create log directory: /home/runner ...") and
+    # rclpy.init() raises before any test even runs. Point it at a directory
+    # this process definitely owns instead of relying on the runner's HOME.
+    os.environ.setdefault('ROS_LOG_DIR', tempfile.mkdtemp(prefix='ros_log_'))
     rclpy.init()
     yield
     rclpy.shutdown()
