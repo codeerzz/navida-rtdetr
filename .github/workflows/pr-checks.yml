@@ -1,0 +1,70 @@
+name: PR checks
+
+# Two independent jobs:
+#   python-tests  -- fast, no ROS install needed, REQUIRED to merge. Runs the
+#                    ROS-free unit tests (byte_tracker, depth_utils, color_classifier,
+#                    label_vote, ...) plus lint. Any test that needs rclpy/cv_bridge/
+#                    vision_msgs self-skips here via pytest.importorskip, it does not fail.
+#   ros2-build     -- best-effort colcon build + full test suite (including the ROS-
+#                    dependent tests) in an actual ROS 2 Humble environment. Marked
+#                    continue-on-error: this job was written but NOT run against a real
+#                    GitHub Actions runner before merging -- verify it goes green before
+#                    relying on it as a required check (see rosdep key coverage for
+#                    python3-ultralytics in particular, it may need a local rosdep rule).
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  python-tests:
+    name: Lint + unit tests (ROS-free)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy scipy opencv-python-headless pyyaml pytest ruff
+
+      - name: Lint (ruff)
+        run: |
+          ruff check rtdetr_zed_tracker/rtdetr_zed_tracker fusion_pkg/fusion_pkg
+
+      - name: rtdetr_zed_tracker test suite
+        working-directory: rtdetr_zed_tracker
+        run: pytest test/ -v --ignore=test/test_yolo_world_mock.py
+
+      # fusion_pkg/test/ is intentionally not run here: as of this writing it only
+      # contains ament boilerplate tests (test_copyright.py, test_flake8.py,
+      # test_pep257.py) that import ament_copyright/ament_flake8/ament_pep257,
+      # which only exist inside a sourced ROS 2 install -- the ros2-build job
+      # below covers those via colcon test.
+
+  ros2-build:
+    name: "ROS 2 build + full test suite (best-effort, unvalidated)"
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ros-tooling/setup-ros@v0.7
+        with:
+          required-ros-distributions: humble
+
+      - uses: ros-tooling/action-ros-ci@v0.3
+        with:
+          package-name: |
+            rtdetr_zed_tracker
+            rtdetr_zed_tracker_msgs
+            fusion_pkg
+          target-ros2-distro: humble
