@@ -6,11 +6,11 @@ name: PR checks
 #                    label_vote, ...) plus lint. Any test that needs rclpy/cv_bridge/
 #                    vision_msgs self-skips here via pytest.importorskip, it does not fail.
 #   ros2-build     -- best-effort colcon build + full test suite (including the ROS-
-#                    dependent tests) in an actual ROS 2 Humble environment. Marked
-#                    continue-on-error: this job was written but NOT run against a real
-#                    GitHub Actions runner before merging -- verify it goes green before
-#                    relying on it as a required check (see rosdep key coverage for
-#                    python3-ultralytics in particular, it may need a local rosdep rule).
+#                    dependent tests) in an actual ROS 2 Humble environment. Runs only
+#                    on push to main (NOT on pull_request) so PRs aren't gated behind
+#                    a 10+ minute, still-flaky ROS environment job -- see rosdep key
+#                    coverage for python3-ultralytics in particular, it may need a
+#                    local rosdep rule.
 
 on:
   pull_request:
@@ -52,18 +52,30 @@ jobs:
 
   ros2-build:
     name: "ROS 2 build + full test suite (best-effort, unvalidated)"
+    # Only runs on push to main -- NOT on pull_request, see comment above.
+    if: github.event_name == 'push'
     # Pinned to 22.04 (jammy) on purpose: ROS 2 Humble only ships apt packages
     # for jammy. `ubuntu-latest` now resolves to 24.04 (noble), which has no
     # ros-humble-desktop package at all -- that mismatch is what made this job
     # fail with "apt-get install ... exit code 100".
     runs-on: ubuntu-22.04
     continue-on-error: true
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
       - uses: ros-tooling/setup-ros@v0.7
         with:
           required-ros-distributions: humble
+
+      - name: Remove broken rosidl Rust generator
+        # ros-humble-desktop pulls in ros-humble-rosidl-generator-rs, but on
+        # these runners its "rosidl_pycommon" python dependency is missing --
+        # rosidl_generate_interfaces() auto-invokes every generator it finds
+        # installed, so this package (which never asked for Rust support)
+        # fails to build with "ModuleNotFoundError: rosidl_pycommon". Purging
+        # it means CMake never discovers it, so it's skipped entirely.
+        run: sudo apt-get purge -y ros-humble-rosidl-generator-rs || true
 
       - uses: ros-tooling/action-ros-ci@v0.3
         with:
