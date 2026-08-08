@@ -31,8 +31,12 @@ class ClassRemapNode(Node):
         p = self.declare_parameter
         mapping_file = p('class_remap_file', '',
                          _desc('YAML: original class index -> canonical class index')).value
-        qos_rel = p('input_qos_reliability', 'reliable',
-                    _desc('Subscription reliability: reliable|best_effort')).value
+        qos_rel = str(p('input_qos_reliability', 'reliable',
+                       _desc('Subscription reliability: reliable|best_effort')).value).lower()
+        if qos_rel not in ('reliable', 'best_effort'):
+            raise RuntimeError(
+                f"input_qos_reliability must be 'reliable' or 'best_effort' (got: {qos_rel!r}) -- "
+                'a typo here silently falling back to best_effort can drop detections unnoticed')
 
         if not mapping_file:
             raise RuntimeError("class_remap_node requires the 'class_remap_file' parameter")

@@ -142,6 +142,34 @@ def test_load_color_ranges_accepts_flat_and_nested_forms(tmp_path):
     assert len(ranges['solid_flat']) == 1
 
 
+def test_load_color_ranges_accepts_a_truly_flat_top_level_list(tmp_path):
+    """`color: [y_min, y_max, cr_min, cr_max, cb_min, cb_max]` with no extra
+    list-of-lists wrapper -- the terse single-range form from the docstring."""
+    p = tmp_path / 'ranges.yaml'
+    p.write_text('red: [0, 255, 150, 255, 0, 140]\n')
+    ranges = load_color_ranges(str(p))
+    assert ranges['red'] == [(0, 255, 150, 255, 0, 140)]
+
+
+def test_load_color_ranges_rejects_an_empty_range_list(tmp_path):
+    """Regression guard for a hand-edited calibration line left empty (e.g.
+    `red: []` after a botched paste) -- must fail loudly at load time, not
+    silently produce a 0-length range that only breaks on the first live frame."""
+    p = tmp_path / 'ranges.yaml'
+    p.write_text('red: []\ngreen: [20, 245, 60, 122, 75, 125]\n')
+    with pytest.raises(ValueError, match='red'):
+        load_color_ranges(str(p))
+
+
+def test_load_color_ranges_rejects_a_range_with_wrong_length(tmp_path):
+    """Regression guard for the most plausible real typo: miscounting values
+    while hand-typing a calibrated range (e.g. 4 or 7 instead of 6)."""
+    p = tmp_path / 'ranges.yaml'
+    p.write_text('red: [[0, 255, 150, 255]]\n')   # only 4 of 6 values
+    with pytest.raises(ValueError, match='red'):
+        load_color_ranges(str(p))
+
+
 def test_empty_or_missing_crop_returns_uncertain(color_ranges):
     empty = np.zeros((0, 0, 3), dtype=np.uint8)
     assert classify_color(empty, color_ranges).label is None
@@ -182,6 +210,31 @@ def test_more_varied_samples_widen_the_learned_range():
 def test_suggest_range_from_samples_rejects_empty_input():
     with pytest.raises(ValueError):
         suggest_range_from_samples([])
+
+
+def test_suggest_range_from_samples_skips_empty_or_none_crops_with_a_warning():
+    """A degenerate crop (None, or a zero-size ndarray from a bad ROI select)
+    must be skipped, not crash cv2.cvtColor -- the good samples still count."""
+    good = solid_bgr((30, 30, 200))
+    empty = np.zeros((0, 0, 3), dtype=np.uint8)
+    with pytest.warns(UserWarning, match='skipping'):
+        learned = suggest_range_from_samples([good, empty, None])
+    assert learned == suggest_range_from_samples([good])
+
+
+def test_suggest_range_from_samples_raises_when_every_crop_is_empty():
+    with pytest.raises(ValueError, match='every provided crop was empty'):
+        suggest_range_from_samples([np.zeros((0, 0, 3), dtype=np.uint8), None])
+
+
+def test_suggest_range_from_samples_skips_a_crop_too_small_for_roi_shrink():
+    """A tiny crop can have a non-empty shape but still shrink to an empty ROI
+    -- must be skipped the same way, not raise from inside cv2.cvtColor."""
+    good = solid_bgr((30, 30, 200))
+    tiny = solid_bgr((30, 30, 200), size=(1, 1))
+    with pytest.warns(UserWarning, match='skipping'):
+        learned = suggest_range_from_samples([good, tiny], roi_shrink=0.1)
+    assert learned == suggest_range_from_samples([good], roi_shrink=0.1)
 
 
 # --------------------------------------------------------------------------- #

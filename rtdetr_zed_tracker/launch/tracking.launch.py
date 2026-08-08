@@ -90,7 +90,7 @@ def generate_launch_description():
     # tracker_node's actual input: the remapped topic when enable_class_remap is
     # true, otherwise the raw detections topic unchanged.
     tracker_detections_topic = PythonExpression([
-        "'/class_remap_node/detections_remapped' if '", enable_class_remap, "' == 'true' else '",
+        "'/class_remap_node/detections_remapped' if '", enable_class_remap, "'.lower() in ('true', '1') else '",
         detections, "'",
     ])
 

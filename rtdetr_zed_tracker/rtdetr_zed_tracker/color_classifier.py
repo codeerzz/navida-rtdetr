@@ -22,6 +22,7 @@ range -- same symptom, different cause, same fix).
 """
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field
 
 import cv2
@@ -48,14 +49,30 @@ def load_color_ranges(path: str) -> dict[str, list[ColorRange]]:
 
     Accepts either a single range (flat 6-element list) or a list of ranges per
     color, so a color that doesn't need the multi-range mechanism can stay terse.
+
+    Validates each range is a 6-element list right here rather than letting a
+    malformed one (a hand-edited calibration line missing a value, an emptied
+    list, ...) surface later as a confusing unpack error deep inside
+    ``classify_color`` on the first live frame.
     """
     with open(path) as f:
         raw = yaml.safe_load(f) or {}
 
     ranges: dict[str, list[ColorRange]] = {}
     for color, entry in raw.items():
-        rows = entry if entry and isinstance(entry[0], (list, tuple)) else [entry]
-        ranges[color] = [tuple(int(v) for v in row) for row in rows]
+        if not isinstance(entry, (list, tuple)) or not entry:
+            raise ValueError(
+                f'color_ranges.yaml: "{color}" must be a 6-element range or a list of '
+                f'6-element ranges, got: {entry!r}')
+        rows = entry if isinstance(entry[0], (list, tuple)) else [entry]
+        parsed: list[ColorRange] = []
+        for row in rows:
+            if not isinstance(row, (list, tuple)) or len(row) != 6:
+                raise ValueError(
+                    f'color_ranges.yaml: "{color}" range must have exactly 6 values '
+                    f'[y_min,y_max,cr_min,cr_max,cb_min,cb_max], got: {row!r}')
+            parsed.append(tuple(int(v) for v in row))
+        ranges[color] = parsed
     return ranges
 
 
@@ -130,12 +147,23 @@ def suggest_range_from_samples(bgr_crops: list[np.ndarray], roi_shrink: float = 
         raise ValueError('suggest_range_from_samples needs at least one crop')
 
     los, his = [], []
-    for crop in bgr_crops:
+    for i, crop in enumerate(bgr_crops):
+        if crop is None or crop.size == 0:
+            warnings.warn(f'suggest_range_from_samples: skipping empty crop #{i}', stacklevel=2)
+            continue
         x1, y1, x2, y2 = _central_roi(crop.shape, roi_shrink)
-        roi = crop[y1:y2, x1:x2].reshape(-1, 3)
-        ycrcb = cv2.cvtColor(roi.reshape(-1, 1, 3), cv2.COLOR_BGR2YCrCb).reshape(-1, 3)
+        roi = crop[y1:y2, x1:x2]
+        if roi.size == 0:
+            warnings.warn(
+                f'suggest_range_from_samples: skipping crop #{i} -- roi_shrink={roi_shrink} '
+                f'leaves an empty region for this crop size', stacklevel=2)
+            continue
+        ycrcb = cv2.cvtColor(roi, cv2.COLOR_BGR2YCrCb).reshape(-1, 3)
         los.append(np.percentile(ycrcb, percentile_low, axis=0))
         his.append(np.percentile(ycrcb, percentile_high, axis=0))
+
+    if not los:
+        raise ValueError('suggest_range_from_samples: every provided crop was empty')
 
     lo = np.min(los, axis=0) - pad
     hi = np.max(his, axis=0) + pad

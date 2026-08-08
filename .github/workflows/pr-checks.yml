@@ -52,7 +52,11 @@ jobs:
 
   ros2-build:
     name: "ROS 2 build + full test suite (best-effort, unvalidated)"
-    runs-on: ubuntu-latest
+    # Pinned to 22.04 (jammy) on purpose: ROS 2 Humble only ships apt packages
+    # for jammy. `ubuntu-latest` now resolves to 24.04 (noble), which has no
+    # ros-humble-desktop package at all -- that mismatch is what made this job
+    # fail with "apt-get install ... exit code 100".
+    runs-on: ubuntu-22.04
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
