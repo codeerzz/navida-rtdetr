@@ -27,6 +27,7 @@ import os
 
 import numpy as np
 import pytest
+import yaml
 from rtdetr_zed_tracker.color_classifier import (
     classify_color,
     load_color_ranges,
@@ -37,6 +38,7 @@ from rtdetr_zed_tracker.color_classifier import (
 TEST_DIR = os.path.dirname(__file__)
 CONFIG_PATH = os.path.join(TEST_DIR, 'fixtures', 'color_ranges_test.yaml')
 PRODUCTION_CONFIG_PATH = os.path.join(TEST_DIR, '..', 'config', 'color_ranges.yaml')
+PRODUCTION_LABELS_PATH = os.path.join(TEST_DIR, '..', 'config', 'class_labels.yaml')
 
 
 def solid_bgr(bgr, size=(120, 160)):
@@ -273,3 +275,29 @@ def test_production_color_ranges_do_not_overlap():
                     assert not ranges_overlap(range_a, range_b), (
                         f'"{color_a}" range {range_a} overlaps "{color_b}" range {range_b} '
                         f'in config/color_ranges.yaml -- recalibrate, see docstring above')
+
+
+def test_every_production_colour_has_a_class_index():
+    """Every colour in config/color_ranges.yaml needs a matching "<colour>_buoy"
+    entry in config/class_labels.yaml, or the refinement is computed and then
+    thrown away.
+
+    color_classification_node decides in name space and writes the class INDEX
+    back out. A colour with no configured index hits the node's fail-safe: it
+    keeps the original class id and warns once (never writing a name onto an
+    index-space topic, which would break depth_fusion_node's int()). That is the
+    right behaviour, but from the outside it looks exactly like the colour
+    refinement doing nothing at all -- silent except for one log line.
+
+    This is a config-pairing test, not a code test: adding a colour to
+    color_ranges.yaml is only half the job, and the other half is easy to forget.
+    """
+    ranges = load_color_ranges(PRODUCTION_CONFIG_PATH)
+    with open(PRODUCTION_LABELS_PATH) as f:
+        names = {str(v) for v in (yaml.safe_load(f) or {}).values()}
+
+    missing = sorted(f'{c}_buoy' for c in ranges if f'{c}_buoy' not in names)
+    assert not missing, (
+        f'config/color_ranges.yaml defines {missing} but config/class_labels.yaml has no '
+        f'index for them, so those refinements would be silently dropped. Append a new '
+        f'index (do NOT reuse 0-6 -- those are what the model emits).')

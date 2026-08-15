@@ -7,12 +7,32 @@ each colorable detection's crop with color_classifier, and majority-votes the
 result (label_vote.LabelVote) before publishing a refined copy of the message
 with the color-bearing part of the label corrected.
 
-Only labels in ``colorable_labels`` (default: buoy, red_buoy, green_buoy) are
-touched -- cardinal-mark classes (east/north/south/west_buoy) pass through
-unchanged, since color has no meaning for them. ``buoy`` is included by default
-so this pairs directly with class_remap_node: if RT-DETR's 7 trained classes
-are collapsed to a single generic "buoy" upstream (no retraining needed -- see
-class_remap.yaml), this node is what actually decides red vs green.
+Only labels in ``colorable_labels`` (default: buoy, red_buoy, green_buoy,
+black_buoy) are touched -- cardinal-mark classes (east/north/south/west_buoy)
+pass through unchanged, since a cardinal mark is decided by its topmark, not its
+colour. ``buoy`` is included by default so this pairs directly with
+class_remap_node: if RT-DETR's 7 trained classes are collapsed to a single
+generic "buoy" upstream (no retraining needed -- see class_remap.yaml), this node
+is what actually decides red vs green vs black.
+
+Already-coloured labels are colorable too, so a decision can be revised while the
+vote is still open; once the vote freezes, further frames cannot change it.
+
+Per-colour confidence (``min_confidence_overrides``)
+----------------------------------------------------
+The colours are not equally risky to get wrong. Red and green sit far out on the
+Cr axis, so a patch either has that chroma or it does not. Black sits AT neutral
+chroma and is identified by low luma -- which any dark, washed-out, shadowed
+patch also looks like. So black has to show more evidence: the default
+``black:0.30`` raises its bar from the global 0.12.
+
+Measured on the rig for context: a real black buoy scores ~0.64, a green one
+~0.99, a red one ~0.30. So 0.30 leaves black about 2x headroom on real hardware
+while refusing the thin, ambiguous cases.
+
+Failing the bar is NOT a vote for another colour -- classify_color picks the
+highest scorer first and only then applies that colour's threshold, so a
+too-thin black becomes "uncertain" (no vote this frame), never "green".
 
 Name space vs index space (``class_labels_file``)
 -------------------------------------------------
@@ -88,10 +108,13 @@ class ColorClassificationNode(Node):
         self.roi_shrink = p('roi_shrink', 0.6, _desc('central crop fraction sampled for color')).value
         self.min_confidence = p('min_confidence', 0.12,
                                 _desc('min in-range pixel ratio to trust a color observation')).value
+        overrides_raw = p('min_confidence_overrides', 'black:0.30',
+                          _desc('per-colour confidence overrides, "colour:threshold" separated by '
+                                'commas; empty = min_confidence applies to every colour')).value
         self.min_votes = p('min_votes', 3, _desc('observations before a track color is frozen')).value
         color_ranges_file = p('color_ranges_file', '',
                               _desc('YAML: color -> [[y_min,y_max,cr_min,cr_max,cb_min,cb_max], ...]')).value
-        colorable = p('colorable_labels', ['buoy', 'red_buoy', 'green_buoy'],
+        colorable = p('colorable_labels', ['buoy', 'red_buoy', 'green_buoy', 'black_buoy'],
                      _desc('class names eligible for color refinement; others pass through untouched')).value
         self.colorable = set(colorable)
         labels_file = p('class_labels_file', '',
@@ -114,6 +137,9 @@ class ColorClassificationNode(Node):
         self.color_ranges = load_color_ranges(color_ranges_file)
         # 'red' -> 'red_buoy' -- assumes the "<color>_buoy" naming already used by class_labels.yaml.
         self.color_to_label = {c: f'{c}_buoy' for c in self.color_ranges}
+
+        # Per-colour confidence, resolved once so classify_color just looks it up.
+        self.min_confidence_per_color = self._parse_overrides(overrides_raw)
 
         # Empty dicts mean "class_id is already a name" -- see the module docstring.
         self.index_to_name, self.name_to_index = self._load_labels(labels_file)
@@ -141,7 +167,55 @@ class ColorClassificationNode(Node):
             f'color_classification_node up: colors={list(self.color_ranges)} '
             f'colorable={sorted(self.colorable)} class_id_space={space} '
             f'vote_key={vote} min_votes={self.min_votes} '
-            f'roi_shrink={self.roi_shrink} min_confidence={self.min_confidence}')
+            f'roi_shrink={self.roi_shrink} '
+            f'min_confidence={ {c: round(t, 3) for c, t in sorted(self.min_confidence_per_color.items())} }')
+
+    # ---------------------------------------------------------------- confidence
+    def _parse_overrides(self, raw: str) -> dict[str, float]:
+        """"black:0.30,red:0.2" -> {every colour: its threshold}.
+
+        Every configured colour gets an entry, so classify_color never has to fall
+        back to a module default that might disagree with this node's
+        ``min_confidence``.
+
+        Malformed syntax raises -- "red", "red:high" and "red:30" are unambiguous
+        mistakes, and an override exists to make a colour HARDER to claim, so one
+        that silently reverts to the low global bar would be invisible in exactly
+        the case it guards.
+
+        A well-formed override for a colour the config does not define only WARNS.
+        It has to: the default is ``black:0.30``, and a perfectly valid
+        color_ranges.yaml with just red and green would otherwise stop the node
+        from starting. A default must never break a valid configuration -- so this
+        one degrades to a log line that still catches a typo.
+        """
+        thresholds = {c: float(self.min_confidence) for c in self.color_ranges}
+        for entry in (e.strip() for e in str(raw).split(',')):
+            if not entry:
+                continue
+            colour, _, value = entry.partition(':')
+            colour = colour.strip()
+            if not _:
+                raise RuntimeError(
+                    f'min_confidence_overrides entry {entry!r} is not "colour:threshold"')
+            try:
+                threshold = float(value)
+            except ValueError:
+                raise RuntimeError(
+                    f'min_confidence_overrides: {value!r} in {entry!r} is not a number') from None
+            if not 0.0 <= threshold <= 1.0:
+                raise RuntimeError(
+                    f'min_confidence_overrides: {threshold} in {entry!r} is outside [0, 1] -- '
+                    'it is an in-range PIXEL RATIO, not a percentage')
+            if colour not in self.color_ranges:
+                self.get_logger().warn(
+                    f'min_confidence_overrides names colour {colour!r}, which is not in '
+                    f'color_ranges_file (has: {sorted(self.color_ranges)}) -- ignoring it. '
+                    'Expected if this config simply has no such colour; check the spelling '
+                    'if you did mean to raise its bar.')
+                continue
+            thresholds[colour] = threshold
+        return thresholds
 
     # ---------------------------------------------------------------- label space
     def _load_labels(self, path):
@@ -278,7 +352,8 @@ class ColorClassificationNode(Node):
         y2 = min(h_img, int(cy + h / 2))
         crop = image[y1:y2, x1:x2]
 
-        result = classify_color(crop, self.color_ranges, self.roi_shrink, self.min_confidence)
+        result = classify_color(crop, self.color_ranges, self.roi_shrink,
+                                self.min_confidence_per_color)
         if key is None:                      # vote_key='none' -- this frame decides alone
             return result.label
         vote = self.votes.setdefault(key, LabelVote(min_votes=self.min_votes))

@@ -1,5 +1,26 @@
-# RT-DETR custom buoy model: class index -> name (from isaac_ros_assets/models/rtdetr/test_trt.py NAMES).
-# Detections carry class_id as the integer index (string); this maps it to a human name.
+# Class index -> name. Detections carry class_id as the integer index (string);
+# this maps it to a human name.
+#
+# 0-6 are what the RT-DETR model was TRAINED on (see
+# isaac_ros_assets/models/rtdetr/test_trt.py NAMES) -- those indices are fixed by
+# the weights and cannot be reassigned here.
+#
+# 7 is different: the model never emits it. It is an OUTPUT-ONLY label, written by
+# color_classification_node when the colour vote says black. Appending a new index
+# rather than reusing a free-looking cardinal slot (1/3/5/6) is deliberate: with
+# enable_class_remap:=false those slots still carry real detections, and reusing one
+# would silently relabel an east_buoy as a black_buoy with nothing to show for it.
+# Appending cannot collide with anything.
+#
+# The intended configuration is shape-only detection plus colour refinement:
+#
+#   enable_class_remap:=true enable_color_refinement:=true
+#
+# which collapses 0-6 to a plain "buoy" and then lets YCrCb pick red / green /
+# black. In that mode the only labels that ever reach depth_fusion_node are
+# buoy (0, colour undecided), green_buoy (2), red_buoy (4) and black_buoy (7).
+# The cardinal entries stay listed anyway so that running WITHOUT class_remap
+# still names its detections instead of logging unknown_1.
 0: buoy
 1: east_buoy
 2: green_buoy
@@ -7,3 +28,4 @@
 4: red_buoy
 5: south_buoy
 6: west_buoy
+7: black_buoy

@@ -23,6 +23,7 @@ range -- same symptom, different cause, same fix).
 from __future__ import annotations
 
 import warnings
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 import cv2
@@ -92,13 +93,39 @@ def _central_roi(shape: tuple[int, int], roi_shrink: float) -> tuple[int, int, i
     return x1, y1, x2, y2
 
 
+DEFAULT_MIN_CONFIDENCE = 0.12
+
+
+def threshold_for(color: str, min_confidence) -> float:
+    """The confidence a given color must clear.
+
+    ``min_confidence`` is either one float for every color, or a mapping of
+    per-color thresholds. Per-color exists because the colors are not equally
+    risky to get wrong: a color whose range hugs neutral chroma (black) can be
+    imitated by any dark, washed-out patch, so it should have to show more
+    evidence than one sitting far out on the Cr axis (red, green).
+    """
+    if isinstance(min_confidence, Mapping):
+        return float(min_confidence.get(color, DEFAULT_MIN_CONFIDENCE))
+    return float(min_confidence)
+
+
 def classify_color(bgr_crop: np.ndarray, color_ranges: dict[str, list[ColorRange]],
-                   roi_shrink: float = 0.6, min_confidence: float = 0.12) -> ColorResult:
+                   roi_shrink: float = 0.6,
+                   min_confidence=DEFAULT_MIN_CONFIDENCE) -> ColorResult:
     """Classify the dominant configured color inside ``bgr_crop``.
 
     ``confidence`` is the winning color's in-range pixel ratio within the sampled
-    ROI, in [0, 1]. If it doesn't clear ``min_confidence``, ``label`` is None
-    (uncertain) rather than a forced, possibly-wrong guess.
+    ROI, in [0, 1]. If it doesn't clear the threshold for that color, ``label`` is
+    None (uncertain) rather than a forced, possibly-wrong guess.
+
+    ``min_confidence`` may be a single float (same bar for every color) or a
+    mapping ``{color: threshold}`` -- see ``threshold_for``.
+
+    Note the order: the highest-scoring color is picked FIRST, and only then does
+    its threshold apply. So raising one color's threshold never lets a different
+    color win by default; it only makes that color abstain when its own evidence
+    is thin.
     """
     if bgr_crop is None or bgr_crop.size == 0 or not color_ranges:
         return ColorResult(None, 0.0, {})
@@ -122,7 +149,7 @@ def classify_color(bgr_crop: np.ndarray, color_ranges: dict[str, list[ColorRange
 
     best_color = max(ratios, key=ratios.get)
     best_ratio = ratios[best_color]
-    label = best_color if best_ratio >= min_confidence else None
+    label = best_color if best_ratio >= threshold_for(best_color, min_confidence) else None
     return ColorResult(label, best_ratio, ratios)
 
 

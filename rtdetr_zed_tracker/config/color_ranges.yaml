@@ -17,11 +17,18 @@
 #                                --calibrate red, 2 samples, tool-checked for
 #                                overlap against `green` -- see git history for
 #                                the earlier too-wide attempt this replaced).
-#   red range 2 (highlight),
-#   green                     -- STILL PLACEHOLDER, derived from synthetic
+#   green                     -- calibrated from 10 real ZED frames via the
+#                                --ros-topic mode (lit + shadowed), tool-checked
+#                                for overlap against `red`. See its own note below.
+#   red range 2 (highlight)   -- STILL PLACEHOLDER, derived from synthetic
 #                                swatches (see test/test_color_classifier.py),
-#                                not real footage yet. Calibrate these the same
-#                                way before trusting them on the water.
+#                                not real footage yet. Calibrate it the same way
+#                                before trusting it on the water: point the
+#                                calibrator at a red buoy under strong glare.
+#   black                     -- calibrated from 6 real ZED frames (a 7th was
+#                                discarded as contaminated; see its note). Shares
+#                                a hand-placed Cr boundary with `green` -- read
+#                                both notes before touching either.
 #
 # `make test` runs test_production_color_ranges_do_not_overlap against this
 # file on every change -- keep it green.
@@ -31,4 +38,60 @@ red:
   - [210, 255, 133, 156, 118, 135]    # specular highlight on red (still placeholder)
 
 green:
-  - [20, 245, 60, 122, 75, 125]       # still placeholder
+  # Calibrated from 10 real ZED frames (webcam_color_demo.py --ros-topic
+  # /zed_node/left/image_rect_color --calibrate green), covering the buoy both in
+  # direct light and in shadow. Verified live: green=0.49 / red=0.00 on the buoy,
+  # against a 0.12 threshold.
+  #
+  # ONE range, not two, unlike `red`. The samples fell into two clusters -- lit
+  # (Cr 77-119) and shadowed/desaturated (Cr 105-121, Y 31-51) -- but the two
+  # clusters are ADJACENT, so splitting them costs a second range and buys no
+  # selectivity. red's second range earns its keep because its specular cluster
+  # (Y >= 210) is genuinely disjoint from its main one.
+  #
+  # Tool-checked against both red ranges: no overlap (green Cr tops out at 124,
+  # red starts at 134).
+  #
+  # Cr ceiling is 123, NOT the 124 the calibration padding produced: 123 is the
+  # deliberate green/black boundary. See the `black` note below -- the raw samples
+  # of the two colours are genuinely separated (green tops out at Cr 121, black
+  # starts at 125) and only the +-3 pad made them collide, so the boundary sits in
+  # the middle of that gap and neither colour loses a single real sample.
+  #
+  # Cr is the ONLY thing separating green from black, and from colourless pixels:
+  # the Y and Cb ranges of the two overlap freely. Keep that in mind before
+  # widening Cr on either side.
+  # eskisi- [28, 88, 74, 123, 114, 132]
+ # bu temiz örnek - [51, 167, 69, 108, 105, 141]
+ # eski şeyle birleşim 
+ - [28, 167, 69, 123, 105, 141]
+
+black:
+  # Calibrated from 6 real ZED frames, same tool and topic as `green`.
+  #
+  # Black is not like red and green. Red and green sit far apart on the Cr axis, so
+  # chroma alone separates them. Black has NO chroma -- it sits at neutral
+  # (Cr = Cb = 128) and identifies itself by low Y -- and green's shadowed samples
+  # darken and drift toward neutral too. The two describe the same corner of the
+  # space, so the boundary between them is placed by hand rather than by padding:
+  #
+  #   green raw samples top out at   Cr 121
+  #   black raw samples bottom at    Cr 125
+  #   -> a genuine 3-count gap (122, 123, 124). The colours DO separate in the
+  #      measurements; only the calibrator's +-3 pad made them collide.
+  #
+  # So the boundary is the middle of that gap: green's ceiling 123, black's floor
+  # 124. Every raw sample of both colours stays inside its own range -- nothing
+  # real was given up, only padding.
+  #
+  # A seventh sample was DISCARDED: Y[14,132] Cr[119,128] Cb[129,139]. Every other
+  # sample sat at Y<=38 and Cr>=125, so that one had background or a lit surface in
+  # the ROI. Kept in, it would have stretched the range to [8,135,116,131,125,142]
+  # -- Y almost to white and Cr deep into green -- which is exactly the
+  # "everything classifies as black" failure. If you recalibrate, drop that kind of
+  # sample with `z`.
+  #
+  # Cr is the ONLY axis separating black from green: their Y ranges overlap (8-41
+  # vs 28-88) and so do their Cb ranges (125-138 vs 114-132). Widening Cr on either
+  # side re-creates the collision, and the overlap test will say so.
+  - [8, 41, 124, 131, 125, 138]

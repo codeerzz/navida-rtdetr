@@ -102,6 +102,7 @@ def generate_launch_description():
     color_ranges_file = LaunchConfiguration('color_ranges_file')
     color_vote_key = LaunchConfiguration('color_vote_key')
     color_vote_cell_px = LaunchConfiguration('color_vote_cell_px')
+    color_min_confidence_overrides = LaunchConfiguration('color_min_confidence_overrides')
 
     args = [
         DeclareLaunchArgument('detections_topic', default_value='/detections_output'),
@@ -124,6 +125,11 @@ def generate_launch_description():
                                           'box centre) is what keeps the vote working'),
         DeclareLaunchArgument('color_vote_cell_px', default_value='64.0',
                               description='Grid cell size in px when color_vote_key:=grid'),
+        DeclareLaunchArgument('color_min_confidence_overrides', default_value='black:0.30',
+                              description='Per-colour confidence bars, "colour:threshold" comma '
+                                          'separated. black is raised above the global default '
+                                          'because it sits at neutral chroma, where any dark '
+                                          'washed-out patch can imitate it'),
     ]
 
     # ------------------------------------------------------------------ topic chain
@@ -163,6 +169,7 @@ def generate_launch_description():
             'class_labels_file': labels,
             'vote_key': color_vote_key,
             'vote_cell_px': color_vote_cell_px,
+            'min_confidence_overrides': color_min_confidence_overrides,
         }],
         remappings=[
             ('~/image', color),

@@ -391,6 +391,94 @@ def test_no_image_and_no_vote_still_leaves_the_label_alone():
         node.destroy_node()
 
 
+# ------------------------------------------------------- per-colour confidence
+
+def _partly_red_bgr():
+    """Neutral grey canvas with a red square covering 1/4 of the sampled ROI.
+
+    A _solid_bgr crop is useless for threshold tests: it scores exactly 1.0, which
+    no threshold in [0, 1] can reject. Grey is deliberate -- at Cr=Cb=128 it falls
+    in neither fixture range, so it contributes to no colour's ratio.
+
+    Geometry: the bbox used below is 100x100, classify_color samples the central
+    roi_shrink=0.6 of it (60x60 = 3600 px), and a 30x30 red patch at the image
+    centre puts 900 of those in range -> red ratio 0.25.
+    """
+    img = np.full((200, 300, 3), 128, dtype=np.uint8)
+    img[85:115, 135:165] = (30, 30, 200)
+    return img
+
+
+def test_a_raised_bar_makes_that_colour_abstain_rather_than_elect_another():
+    """The winner is picked BEFORE any threshold is applied, so failing the bar
+    must yield "uncertain" -- never a vote for a different colour."""
+    node = _make_node(min_confidence_overrides='red:0.5')   # 0.25 observed < 0.5
+    try:
+        stamp = _stamp(130, 0)
+        node.on_image(_image_msg(_partly_red_bgr(), stamp))
+        node.on_tracks(_tracks_msg(stamp, [('t1', 'buoy', 150, 100, 100, 100)]))
+
+        # Not red (bar not cleared), and NOT flipped to green either.
+        assert node.pub.messages[0].detections[0].results[0].hypothesis.class_id == 'buoy'
+        assert node.votes['t1'].current_best is None
+    finally:
+        node.destroy_node()
+
+
+def test_the_same_observation_passes_when_the_bar_is_low():
+    """Companion to the test above: proves the abstention came from the threshold
+    and not from the crop being unclassifiable in the first place."""
+    node = _make_node(min_confidence_overrides='red:0.2')   # 0.25 observed > 0.2
+    try:
+        stamp = _stamp(135, 0)
+        node.on_image(_image_msg(_partly_red_bgr(), stamp))
+        node.on_tracks(_tracks_msg(stamp, [('t1', 'buoy', 150, 100, 100, 100)]))
+
+        assert node.pub.messages[0].detections[0].results[0].hypothesis.class_id == 'red_buoy'
+    finally:
+        node.destroy_node()
+
+
+def test_colours_without_an_override_keep_the_global_min_confidence():
+    node = _make_node(min_confidence=0.05, min_confidence_overrides='red:0.9')
+    try:
+        assert node.min_confidence_per_color['red'] == pytest.approx(0.9)
+        assert node.min_confidence_per_color['green'] == pytest.approx(0.05)
+    finally:
+        node.destroy_node()
+
+
+def test_empty_override_string_leaves_every_colour_on_the_global_bar():
+    node = _make_node(min_confidence=0.2, min_confidence_overrides='')
+    try:
+        assert set(node.min_confidence_per_color) == {'red', 'green'}
+        assert all(v == pytest.approx(0.2) for v in node.min_confidence_per_color.values())
+    finally:
+        node.destroy_node()
+
+
+@pytest.mark.parametrize('bad', ['red', 'red:high', 'red:30'])
+def test_malformed_override_is_rejected_at_startup(bad):
+    """Missing colon, non-numeric, and out-of-[0,1] are unambiguous mistakes.
+    Strict on purpose: an override exists to make a colour HARDER to claim, so one
+    that silently reverted to the low global bar would be invisible in exactly the
+    situation it was added to guard against."""
+    with pytest.raises(RuntimeError, match='min_confidence_overrides'):
+        _make_node(min_confidence_overrides=bad)
+
+
+def test_override_for_an_unconfigured_colour_is_ignored_not_fatal():
+    """The shipped default is "black:0.30", but a config with only red and green is
+    perfectly valid -- a default must never stop the node from starting. So this
+    one degrades to a warning (the test fixture has no black)."""
+    node = _make_node(min_confidence=0.2, min_confidence_overrides='black:0.30')
+    try:
+        assert set(node.min_confidence_per_color) == {'red', 'green'}
+        assert all(v == pytest.approx(0.2) for v in node.min_confidence_per_color.values())
+    finally:
+        node.destroy_node()
+
+
 def test_invalid_vote_key_is_rejected_at_startup():
     """A typo must not degrade silently into per-frame decisions that look like a
     working vote."""

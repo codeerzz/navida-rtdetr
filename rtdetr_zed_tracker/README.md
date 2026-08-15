@@ -194,6 +194,48 @@ If RViz shows a Fixed Frame error, confirm the depth frame and update it:
 
 ---
 
+## Colour calibration (against the real ZED)
+
+`config/color_ranges.yaml` decides red vs green. `red`'s main range is calibrated from real footage;
+**`green` and red's specular-highlight range are still placeholders** derived from synthetic swatches.
+Calibrate them before trusting colour on the water.
+
+Calibration must see what the pipeline sees. The camera's own white balance and exposure are half of
+where a colour lands in YCrCb, so calibrating with a laptop webcam measures the *webcam's* response,
+not the ZED's — and the YAML is used on the robot. The ZED's raw UVC frame is no good either: it never
+went through the ISP/rectification that produced `image_rect_color`. And while the stack is running
+`zed_node` owns the camera, so nothing else can open it directly.
+
+So take frames from the topic, with the pipeline **running**, from **inside the container**:
+
+```bash
+docker exec -it -u admin -w /workspaces/isaac_ros-dev \
+  isaac_ros_dev-aarch64-container bash -lc '
+    source /opt/ros/humble/setup.bash && source install/setup.bash
+    export FASTRTPS_DEFAULT_PROFILES_FILE=$ISAAC_ROS_WS/src/rtdetr_zed_tracker/udp_only_profile.xml
+    python3 src/rtdetr_zed_tracker/scripts/webcam_color_demo.py \
+      --ros-topic /zed_node/left/image_rect_color --calibrate green'
+```
+
+Then, in the video window (**click it first — keys go to the window, not the terminal**):
+
+| Key | |
+|---|---|
+| `s` | drag a box around **only the buoy hull** — a loose box pulls in water/sky and poisons the range |
+| `c` | capture a sample. Repeat under direct light, shadow and glare — more varied samples, wider and more robust range |
+| `z` | undo the last sample (use it when `c` prints a "COK GENIS" contamination warning) |
+| `p` | print the computed range, ready to paste into `color_ranges.yaml` — **it never edits the file for you** |
+| `x` | clear all samples |
+
+`p` also warns when the computed range **overlaps another colour's**. Do not paste through that warning:
+an overlapping range is exactly what produces "everything classifies as red".
+
+The same three keys work on a saved frame (`--image frame.png --calibrate green`) and on a plain webcam
+(`--camera 0`). Without `--calibrate`, `--image` stays a one-shot headless check that prints the label
+and ratios.
+
+---
+
 ## Gotchas (full detail in `NOTES.md`)
 
 1. **UDP profile is mandatory.** Any node/CLI joining the pipeline must export
