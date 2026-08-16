@@ -34,6 +34,20 @@ Failing the bar is NOT a vote for another colour -- classify_color picks the
 highest scorer first and only then applies that colour's threshold, so a
 too-thin black becomes "uncertain" (no vote this frame), never "green".
 
+Pixel-reading additions (``use_white_balance``/``use_clahe``/``use_glare_mask``/
+``use_hsv_vote``)
+----------------------------------------------------------------------------
+Validated against real buoy photos + hand-labeled ground truth
+(scripts/test_buoy_folder.py --ground-truth) before landing here. None of them
+touch color_ranges.yaml's calibrated numbers -- they only change how pixels are
+read before those numbers are applied. All default ON. See color_classifier.py's
+module docstring for exactly what each one does; short version: white
+balance + CLAHE run on the whole frame in ``on_image`` (before cropping), glare
+exclusion + the HSV rescue/confirm vote run inside ``classify_color`` on each
+crop. Every one of them is also a parameter, so they can be switched off
+individually without a code change if a real deployment ever disagrees with the
+benchmark; the previous call sites are kept as comments for a full revert.
+
 Name space vs index space (``class_labels_file``)
 -------------------------------------------------
 This node decides in NAME space -- ``colorable_labels`` and ``<color>_buoy`` are
@@ -88,7 +102,9 @@ from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPo
 from sensor_msgs.msg import Image
 from vision_msgs.msg import Detection2DArray
 
-from .color_classifier import classify_color, load_color_ranges
+from .color_classifier import (
+    classify_color, clahe_luma, gray_world_white_balance, load_color_ranges,
+)
 from .label_vote import LabelVote
 
 VOTE_KEYS = ('id', 'grid', 'none')
@@ -111,6 +127,26 @@ class ColorClassificationNode(Node):
         overrides_raw = p('min_confidence_overrides', 'black:0.30',
                           _desc('per-colour confidence overrides, "colour:threshold" separated by '
                                 'commas; empty = min_confidence applies to every colour')).value
+        # Ön işleme (tam kareye uygulanır, on_image'da) + classify_color'ın glare/HSV
+        # eklentileri (crop'a uygulanır, _decide_colour'da) -- hepsi varsayılan AÇIK,
+        # renk aralıklarına (color_ranges_file) DOKUNMAZLAR, sadece pikseller nasıl
+        # okunuyor onu değiştirirler. bkz. color_classifier.py'nin modül docstring'i.
+        self.use_white_balance = p('use_white_balance', True,
+                                   _desc('gray-world white balance on each frame before cropping')).value
+        self.use_clahe = p('use_clahe', True,
+                           _desc('CLAHE on the Y channel only, before cropping')).value
+        self.use_glare_mask = p('use_glare_mask', True,
+                                _desc('exclude near-blown-out (specular highlight) pixels from '
+                                      'every color mask')).value
+        self.glare_y_thresh = p('glare_y_thresh', 245,
+                                _desc('Y value at/above which a pixel counts as glare')).value
+        self.use_hsv_vote = p('use_hsv_vote', True,
+                              _desc('HSV hue check alongside YCrCb: rescue/confirm for red, '
+                                    'confirm-only for green')).value
+        self.hsv_red_min_ratio = p('hsv_red_min_ratio', 0.10,
+                                   _desc('min HSV red-hue ratio for the red rescue/confirm vote')).value
+        self.hsv_green_min_ratio = p('hsv_green_min_ratio', 0.10,
+                                     _desc('min HSV green-hue ratio to confirm a YCrCb green pick')).value
         self.min_votes = p('min_votes', 3, _desc('observations before a track color is frozen')).value
         color_ranges_file = p('color_ranges_file', '',
                               _desc('YAML: color -> [[y_min,y_max,cr_min,cr_max,cb_min,cb_max], ...]')).value
@@ -168,7 +204,10 @@ class ColorClassificationNode(Node):
             f'colorable={sorted(self.colorable)} class_id_space={space} '
             f'vote_key={vote} min_votes={self.min_votes} '
             f'roi_shrink={self.roi_shrink} '
-            f'min_confidence={ {c: round(t, 3) for c, t in sorted(self.min_confidence_per_color.items())} }')
+            f'min_confidence={ {c: round(t, 3) for c, t in sorted(self.min_confidence_per_color.items())} } '
+            f'white_balance={self.use_white_balance} clahe={self.use_clahe} '
+            f'glare_mask={self.use_glare_mask}(Y>={self.glare_y_thresh}) '
+            f'hsv_vote={self.use_hsv_vote}(red>={self.hsv_red_min_ratio} green>={self.hsv_green_min_ratio})')
 
     # ---------------------------------------------------------------- confidence
     def _parse_overrides(self, raw: str) -> dict[str, float]:
@@ -310,6 +349,19 @@ class ColorClassificationNode(Node):
         except Exception as e:  # noqa: BLE001
             self.get_logger().warn(f'cv_bridge failed ({msg.encoding}): {e}')
             return
+
+        # ESKİ (ön işlemesiz) davranış -- geri dönmek istersen bunu aç, alttaki
+        # ön işleme bloğunu kapat. Ya da kod değiştirmeden use_white_balance=false
+        # use_clahe=false parametreleriyle aynı sonuca ulaşırsın:
+        # self.images.append((self._ns(msg.header.stamp), img))
+
+        # YENİ: gray-world beyaz dengesi + CLAHE(Y) -- TAM karede, crop'lanmadan
+        # ÖNCE. classify_color'ın crop-bazlı glare/HSV eklentilerinin aksine bunlar
+        # tüm kareyi görmeye ihtiyaç duyar, o yüzden burada, buffer'a girmeden yapılır.
+        if self.use_white_balance:
+            img = gray_world_white_balance(img)
+        if self.use_clahe:
+            img = clahe_luma(img)
         self.images.append((self._ns(msg.header.stamp), img))
 
     def _match_image(self, stamp_ns: int):
@@ -352,8 +404,16 @@ class ColorClassificationNode(Node):
         y2 = min(h_img, int(cy + h / 2))
         crop = image[y1:y2, x1:x2]
 
+        # ESKİ çağrı (glare maskesi/HSV oylaması yok) -- geri dönmek istersen bunu
+        # aç, alttakini kapat: result = classify_color(crop, self.color_ranges,
+        #     self.roi_shrink, self.min_confidence_per_color)
         result = classify_color(crop, self.color_ranges, self.roi_shrink,
-                                self.min_confidence_per_color)
+                                self.min_confidence_per_color,
+                                use_glare_mask=self.use_glare_mask,
+                                glare_y_thresh=self.glare_y_thresh,
+                                use_hsv_vote=self.use_hsv_vote,
+                                hsv_red_min_ratio=self.hsv_red_min_ratio,
+                                hsv_green_min_ratio=self.hsv_green_min_ratio)
         if key is None:                      # vote_key='none' -- this frame decides alone
             return result.label
         vote = self.votes.setdefault(key, LabelVote(min_votes=self.min_votes))
